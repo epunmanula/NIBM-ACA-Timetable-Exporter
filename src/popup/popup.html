@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NIBM ACA Timetable Exporter</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="header">
+      <div class="brand">
+        <div class="logo-mark">NIBM</div>
+        <div class="brand-text">
+          <h1>NIBM ACA</h1>
+          <p class="subtitle">Timetable Exporter</p>
+        </div>
+      </div>
+      <div class="connection-badge" id="connectionBadge">
+        <span class="status-dot disconnected" id="statusDot"></span>
+        <span class="status-text" id="statusText">Checking...</span>
+      </div>
+    </header>
+
+    <!-- Error / Info Banner -->
+    <div class="banner hidden" id="statusBanner">
+      <span class="banner-icon" id="bannerIcon">ℹ</span>
+      <span class="banner-message" id="bannerMessage"></span>
+      <button class="banner-close" id="bannerCloseBtn" aria-label="Close message">×</button>
+    </div>
+
+    <!-- Status Card -->
+    <section class="status-card" id="statusCard">
+      <div class="status-row">
+        <div class="status-item">
+          <span class="status-label">Batch</span>
+          <strong class="status-value" id="valBatch">—</strong>
+        </div>
+        <div class="status-item">
+          <span class="status-label">View</span>
+          <strong class="status-value" id="valView">—</strong>
+        </div>
+        <div class="status-item">
+          <span class="status-label">Period</span>
+          <strong class="status-value" id="valPeriod">—</strong>
+        </div>
+      </div>
+    </section>
+
+    <!-- Primary Actions Toolbar -->
+    <section class="action-bar">
+      <button id="btnScan" class="btn btn-primary" title="Scan current timetable view">
+        <span class="btn-icon">⟳</span> Scan Timetable
+      </button>
+      <button id="btnEnrich" class="btn btn-warning" title="Auto-collect lecturers, exact hours & rooms from ACA cards">
+        <span class="btn-icon">⚡</span> Enrich Details
+      </button>
+      <button id="btnExportCsv" class="btn btn-success" title="Download clean CSV">
+        <span class="btn-icon">📥</span> Export CSV
+      </button>
+      <button id="btnToggleSettings" class="btn btn-secondary" title="Configure columns & filters">
+        <span class="btn-icon">⚙</span> Filters
+      </button>
+    </section>
+
+    <!-- Data Summary Metrics -->
+    <section class="metrics-grid">
+      <div class="metric-card">
+        <span class="metric-num" id="metricTotal">0</span>
+        <span class="metric-label">Events Found</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-num" id="metricUnique">0</span>
+        <span class="metric-label">Unique Events</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-num" id="metricMissing">0</span>
+        <span class="metric-label">Missing Fields</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-num" id="metricDuplicates">0</span>
+        <span class="metric-label">Deduplicated</span>
+      </div>
+    </section>
+
+    <!-- Collapsible Settings & Filters Panel -->
+    <section class="settings-panel hidden" id="settingsPanel">
+      <div class="panel-header">
+        <h2>Filters & Export Columns</h2>
+      </div>
+
+      <!-- Filters Section -->
+      <div class="filter-controls">
+        <div class="filter-row">
+          <div class="form-group">
+            <label for="filterDateFrom">From Date</label>
+            <input type="date" id="filterDateFrom" class="form-input">
+          </div>
+          <div class="form-group">
+            <label for="filterDateTo">To Date</label>
+            <input type="date" id="filterDateTo" class="form-input">
+          </div>
+        </div>
+
+        <div class="filter-row">
+          <div class="form-group">
+            <label for="filterType">Event Type</label>
+            <select id="filterType" class="form-select">
+              <option value="ALL">All Event Types</option>
+              <option value="LP">LP - Lecture (Physical)</option>
+              <option value="LO">LO - Lecture (Online)</option>
+              <option value="TU">TU - Tutorial</option>
+              <option value="LB">LB - Lab</option>
+              <option value="SM">SM - Seminar</option>
+              <option value="WS">WS - Workshop</option>
+              <option value="EX">EX - Exam</option>
+              <option value="VV">VV - Viva</option>
+              <option value="PR">PR - Presentation</option>
+              <option value="CW">CW - Course Work</option>
+              <option value="PC">PC - Practical</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="filterCourse">Course / Subject</label>
+            <input type="text" id="filterCourse" class="form-input" placeholder="e.g. DSE501 or Software">
+          </div>
+        </div>
+      </div>
+
+      <!-- Column Selector Checkboxes -->
+      <div class="columns-selector">
+        <label class="section-subtitle">Include in CSV Export:</label>
+        <div class="checkbox-grid" id="columnsGrid">
+          <!-- Dynamically populated from ExportColumnOption -->
+        </div>
+      </div>
+
+      <!-- Options Row -->
+      <div class="options-row">
+        <label class="toggle-control">
+          <input type="checkbox" id="chkAutoRefresh">
+          <span class="toggle-label">Auto-refresh while tab is open</span>
+        </label>
+        <label class="toggle-control">
+          <input type="checkbox" id="chkDebugMode">
+          <span class="toggle-label">Developer Debug Mode</span>
+        </label>
+      </div>
+    </section>
+
+    <!-- Preview Section -->
+    <section class="preview-section">
+      <div class="preview-header">
+        <div class="preview-title-wrap">
+          <h2>Timetable Preview</h2>
+          <span class="event-count-badge" id="previewCountBadge">0 records</span>
+        </div>
+        <div class="preview-actions">
+          <input type="search" id="tableSearchInput" placeholder="Quick search..." class="search-input">
+        </div>
+      </div>
+
+      <div class="table-container" id="tableContainer">
+        <table class="preview-table" id="previewTable">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Time</th>
+              <th>Type</th>
+              <th>Course</th>
+              <th>Lecturer</th>
+              <th>Room</th>
+            </tr>
+          </thead>
+          <tbody id="previewTableBody">
+            <tr class="empty-row">
+              <td colspan="6">No timetable events loaded. Click "Scan Timetable" to extract.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Debug Log Box (visible in debug mode) -->
+    <section class="debug-drawer hidden" id="debugDrawer">
+      <h3>Diagnostics & Debug Information</h3>
+      <pre id="debugOutput">Debug mode enabled. Diagnostics will appear here.</pre>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <div class="footer-left">
+        <span class="privacy-tag">🔒 Local processing only</span>
+        <span class="last-synced" id="lastSyncedText"></span>
+      </div>
+      <div class="footer-right">
+        <span>v1.0.0</span>
+      </div>
+    </footer>
+  </div>
+
+  <script type="module" src="popup.ts"></script>
+</body>
+</html>

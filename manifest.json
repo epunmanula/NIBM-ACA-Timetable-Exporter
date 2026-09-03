@@ -1,0 +1,56 @@
+{
+  "manifest_version": 3,
+  "name": "NIBM ACA Timetable Exporter",
+  "version": "1.0.0",
+  "description": "Export your NIBM Academic Calendar timetable to clean, Excel-compatible CSV files safely and locally.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://aca.mynibm.com/*"
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "NIBM ACA Timetable Exporter",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background/service-worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://aca.mynibm.com/*"
+      ],
+      "js": [
+        "content/content.js"
+      ],
+      "all_frames": true,
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "content/page-interceptor.js"
+      ],
+      "matches": [
+        "https://aca.mynibm.com/*"
+      ]
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
