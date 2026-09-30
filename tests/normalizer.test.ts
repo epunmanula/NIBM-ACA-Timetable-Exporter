@@ -9,6 +9,7 @@ import {
   normalizeEvent,
   deduplicateEvents,
   computeSummary,
+  mergeModalIntoEvents,
 } from '../src/content/normalizer';
 import { TimetableEvent } from '../src/types/timetable';
 
@@ -182,5 +183,85 @@ describe('Normalizer - Deduplication and Fingerprinting', () => {
     expect(summary.missingFieldsBreakdown.lecturer).toBe(1);
     expect(summary.missingFieldsBreakdown.room).toBe(1);
     expect(summary.missingFieldsCount).toBe(2);
+  });
+
+  it('correctly merges modal data with Sri Lankan initials and room into empty slot', () => {
+    const events: TimetableEvent[] = [
+      {
+        ...sampleEvent1,
+        courseCode: 'MC',
+        lecturer: '',
+        room: '',
+        startTime: '',
+        endTime: '',
+      },
+    ];
+
+    const modalData = {
+      date: '2026-09-01',
+      courseCode: 'MC',
+      startTime: '09:00',
+      endTime: '12:00',
+      lecturer: 'Ms W M A D Weerathunga',
+      room: 'Lecture Hall 18 - 1st Fl',
+      type: 'LP',
+    };
+
+    const merged = mergeModalIntoEvents(events, modalData);
+    expect(merged).toBe(true);
+    expect(events[0].lecturer).toBe('Ms W M A D Weerathunga');
+    expect(events[0].room).toBe('Lecture Hall 18 - 1st Fl');
+    expect(events[0].startTime).toBe('09:00');
+    expect(events[0].endTime).toBe('12:00');
+  });
+
+  it('handles multiple slots on the same day without overwriting each other', () => {
+    const events: TimetableEvent[] = [
+      {
+        ...sampleEvent1,
+        courseCode: 'MC',
+        lecturer: '',
+        room: '',
+        startTime: '',
+        endTime: '',
+      },
+      {
+        ...sampleEvent1,
+        courseCode: 'MC',
+        lecturer: '',
+        room: '',
+        startTime: '',
+        endTime: '',
+      },
+    ];
+
+    // First modal (morning)
+    mergeModalIntoEvents(events, {
+      date: '2026-09-01',
+      courseCode: 'MC',
+      startTime: '09:00',
+      endTime: '12:00',
+      lecturer: 'Ms W M A D Weerathunga',
+      room: 'Lecture Hall 18 - 1st Fl',
+    });
+
+    // Second modal (afternoon)
+    mergeModalIntoEvents(events, {
+      date: '2026-09-01',
+      courseCode: 'MC',
+      startTime: '13:00',
+      endTime: '16:00',
+      lecturer: 'Ms W M A D Weerathunga',
+      room: 'Lecture Hall 18 - 1st Fl',
+    });
+
+    expect(events[0].startTime).toBe('09:00');
+    expect(events[0].endTime).toBe('12:00');
+    expect(events[1].startTime).toBe('13:00');
+    expect(events[1].endTime).toBe('16:00');
+    expect(events[0].lecturer).toBe('Ms W M A D Weerathunga');
+    expect(events[1].lecturer).toBe('Ms W M A D Weerathunga');
+    expect(events[0].room).toBe('Lecture Hall 18 - 1st Fl');
+    expect(events[1].room).toBe('Lecture Hall 18 - 1st Fl');
   });
 });

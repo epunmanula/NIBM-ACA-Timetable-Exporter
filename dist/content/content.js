@@ -17,7 +17,7 @@
 
   // src/content/normalizer.ts
   function resolveTypeInfo(rawType) {
-    const clean = (rawType || "").trim().toUpperCase();
+    const clean = (rawType || "").replace(/_/g, " ").trim().toUpperCase();
     if (!clean) {
       return {
         normalizedCode: "",
@@ -121,23 +121,49 @@
   }
   function mergeModalIntoEvents(events, modal) {
     if (!modal || !modal.date) return false;
-    const target = events.find((e) => {
+    const modalCourse = (modal.courseCode || modal.courseName || "").toUpperCase().trim();
+    const modalType = (modal.type || "").toUpperCase().trim();
+    let target = events.find((e) => {
       if (e.date !== modal.date) return false;
-      if (modal.courseCode && e.courseCode && e.courseCode !== modal.courseCode) return false;
-      if (modal.type && e.type && e.type !== modal.type) return false;
-      return true;
+      const eCourse = (e.courseCode || e.courseName || "").toUpperCase().trim();
+      if (modalCourse && eCourse && eCourse !== modalCourse) return false;
+      if (modalType && e.type && e.type.toUpperCase() !== modalType) return false;
+      if (modal.startTime && e.startTime) {
+        return e.startTime === modal.startTime;
+      }
+      return false;
     });
+    if (!target) {
+      target = events.find((e) => {
+        if (e.date !== modal.date) return false;
+        const eCourse = (e.courseCode || e.courseName || "").toUpperCase().trim();
+        if (modalCourse && eCourse && eCourse !== modalCourse) return false;
+        if (modalType && e.type && e.type.toUpperCase() !== modalType) return false;
+        return !e.startTime || !e.lecturer || !e.room;
+      });
+    }
+    if (!target && modalCourse) {
+      target = events.find((e) => {
+        if (e.date !== modal.date) return false;
+        const eCourse = (e.courseCode || e.courseName || "").toUpperCase().trim();
+        return eCourse === modalCourse && (!e.startTime || !e.lecturer || !e.room);
+      });
+    }
     if (target) {
       if (modal.startTime) target.startTime = modal.startTime;
       if (modal.endTime) target.endTime = modal.endTime;
       if (modal.lecturer) target.lecturer = modal.lecturer;
       if (modal.room) target.room = modal.room;
+      if (modal.courseCode) target.courseCode = modal.courseCode;
+      if (modal.courseName && !target.courseName) target.courseName = modal.courseName;
       if (modal.type) target.type = modal.type;
       if (modal.typeLabel) target.typeLabel = modal.typeLabel;
       if (modal.mode && modal.mode !== "Unknown") target.mode = modal.mode;
       return true;
     }
-    return false;
+    const newEvent = normalizeEvent(modal, events[0]?.batch || "");
+    events.push(newEvent);
+    return true;
   }
   function parseTimeRange(timeRangeStr) {
     if (!timeRangeStr) return { startTime: "", endTime: "" };
@@ -332,6 +358,28 @@
       })
     };
   }
+  function computeMultiMonthPeriodLabel(events, fallback = "") {
+    const monthsSet = /* @__PURE__ */ new Set();
+    for (const ev of events) {
+      if (ev.date && /^\d{4}-\d{2}-\d{2}$/.test(ev.date)) {
+        monthsSet.add(ev.date.slice(0, 7));
+      }
+    }
+    const sortedMonths = Array.from(monthsSet).sort();
+    if (sortedMonths.length === 0) return fallback;
+    if (sortedMonths.length === 1) {
+      const [y, m] = sortedMonths[0].split("-").map(Number);
+      const d = new Date(y, m - 1, 1);
+      return d.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+    }
+    const [y1, m1] = sortedMonths[0].split("-").map(Number);
+    const [y2, m2] = sortedMonths[sortedMonths.length - 1].split("-").map(Number);
+    const d1 = new Date(y1, m1 - 1, 1);
+    const d2 = new Date(y2, m2 - 1, 1);
+    const startStr = d1.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+    const endStr = d2.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+    return `${startStr} \u2013 ${endStr} (${sortedMonths.length} Months)`;
+  }
 
   // src/content/api-interceptor.ts
   function parseApiDateTime(dtStr) {
@@ -449,6 +497,59 @@
     "November",
     "December"
   ];
+  function getCalendarHeading(doc = document) {
+    const headings = doc.querySelectorAll(
+      'h1, h2, h3, h4, [class*="title"], [class*="heading"], header span, span, div, p'
+    );
+    for (const el of Array.from(headings)) {
+      if (el.children.length > 2) continue;
+      const txt = (el.textContent || "").trim();
+      for (const m of MONTH_NAMES) {
+        const match = txt.match(new RegExp(`\\b(${m}\\s+20\\d\\d)\\b`, "i"));
+        if (match) {
+          return match[1];
+        }
+      }
+    }
+    const bodyText = doc.body?.textContent || "";
+    for (const m of MONTH_NAMES) {
+      const match = bodyText.match(new RegExp(`\\b(${m}\\s+20\\d\\d)\\b`, "i"));
+      if (match) {
+        return match[1];
+      }
+    }
+    return "";
+  }
+  function parseHeadingMonthYear(headingText) {
+    for (let i = 0; i < MONTH_NAMES.length; i++) {
+      const m = MONTH_NAMES[i];
+      const match = headingText.match(new RegExp(`\\b${m}\\s+(20\\d\\d)\\b`, "i"));
+      if (match) {
+        return {
+          year: parseInt(match[1], 10),
+          month: i + 1
+        };
+      }
+    }
+    return null;
+  }
+  function isCellOutsideMonth(el) {
+    const check = `${el.className || ""} ${el.getAttribute("data-state") || ""}`.toLowerCase();
+    const outsideKeywords = [
+      "outside",
+      "other-month",
+      "prev-month",
+      "next-month",
+      "muted",
+      "opacity-40",
+      "opacity-50",
+      "text-gray-300",
+      "text-gray-400",
+      "day-outside",
+      "disabled"
+    ];
+    return outsideKeywords.some((kw) => check.includes(kw));
+  }
   function extractPageContext(doc = document, currentUrl = window.location.href) {
     const urlObj = new URL(currentUrl);
     const params = urlObj.searchParams;
@@ -497,35 +598,24 @@
     }
     let year = parseInt(params.get("year") || "", 10);
     let month = parseInt(params.get("month") || "", 10);
-    let periodLabel = "";
-    const headingElements = doc.querySelectorAll(
-      'h1, h2, h3, h4, [class*="title"], [class*="heading"], [class*="calendar-header"], [data-testid*="calendar-header"]'
-    );
-    for (const el of Array.from(headingElements)) {
-      const txt = (el.textContent || "").trim();
-      for (let mIndex = 0; mIndex < MONTH_NAMES.length; mIndex++) {
-        const mName = MONTH_NAMES[mIndex];
-        if (txt.includes(mName)) {
-          const yMatch = txt.match(/\b(20\d\d)\b/);
-          if (yMatch) {
-            year = parseInt(yMatch[1], 10);
-            month = mIndex + 1;
-            periodLabel = `${mName} ${year}`;
-            break;
-          }
-        }
+    let periodLabel = getCalendarHeading(doc);
+    if (periodLabel) {
+      const parsed = parseHeadingMonthYear(periodLabel);
+      if (parsed) {
+        year = parsed.year;
+        month = parsed.month;
       }
-      if (periodLabel) break;
     }
     const now = /* @__PURE__ */ new Date();
     if (!year || isNaN(year)) year = now.getFullYear();
+    if (params.has("month")) {
+      const rawM = parseInt(params.get("month") || "", 10);
+      if (!isNaN(rawM) && !periodLabel) {
+        month = rawM >= 0 && rawM <= 11 ? rawM + 1 : rawM;
+      }
+    }
     if (!month || isNaN(month)) {
       month = now.getMonth() + 1;
-    } else if (month <= 11 && params.has("month")) {
-      if (!periodLabel) {
-        const mVal = month;
-        month = mVal >= 1 && mVal <= 12 ? mVal : mVal + 1;
-      }
     }
     if (!periodLabel) {
       const mName = MONTH_NAMES[(month - 1 + 12) % 12];
@@ -575,6 +665,47 @@
       child.insertAdjacentText("afterend", " ");
     });
     return (clone.textContent || "").replace(/\s+/g, " ").trim();
+  }
+  function findDateForCard(cardEl, activeContext) {
+    let curr = cardEl;
+    for (let depth = 0; depth < 8 && curr; depth++) {
+      if (curr === curr.ownerDocument?.body || curr.tagName === "MAIN") break;
+      const dt = curr.getAttribute("data-date") || curr.getAttribute("data-day");
+      if (dt && /^\d{4}-\d{2}-\d{2}$/.test(dt)) {
+        return dt;
+      }
+      curr = curr.parentElement;
+    }
+    curr = cardEl.parentElement;
+    for (let depth = 0; depth < 8 && curr; depth++) {
+      if (curr === curr.ownerDocument?.body || curr.tagName === "MAIN") break;
+      const allDesc = Array.from(curr.querySelectorAll("*"));
+      for (const desc of allDesc) {
+        if (desc === cardEl || cardEl.contains(desc)) continue;
+        if (desc.children.length > 0) continue;
+        const text = getElementCleanText(desc);
+        if (/^([1-9]|[12]\d|3[01])$/.test(text)) {
+          const dayNum = parseInt(text, 10);
+          const isOutside = isCellOutsideMonth(curr);
+          return resolveCellDate(dayNum, isOutside, 15, activeContext);
+        }
+        const dayMatch = text.match(/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[,\s]+([1-9]|[12]\d|3[01])$/i);
+        if (dayMatch) {
+          const dayNum = parseInt(dayMatch[1], 10);
+          const isOutside = isCellOutsideMonth(curr);
+          return resolveCellDate(dayNum, isOutside, 15, activeContext);
+        }
+      }
+      const currText = getElementCleanText(curr);
+      const startMatch = currText.match(/^([1-9]|[12]\d|3[01])\b/);
+      if (startMatch) {
+        const dayNum = parseInt(startMatch[1], 10);
+        const isOutside = isCellOutsideMonth(curr);
+        return resolveCellDate(dayNum, isOutside, 15, activeContext);
+      }
+      curr = curr.parentElement;
+    }
+    return "";
   }
   function parseEventCard(cardEl, resolvedDate, context) {
     const baseText = getElementCleanText(cardEl);
@@ -637,38 +768,43 @@
         if (hyphenMatch) {
           courseCode = hyphenMatch[1].replace(/\s+/g, " ");
         } else {
-          const words = rawText.split(/[\s,–—~-]+/).map((w) => w.trim().toUpperCase());
-          const IGNORE_WORDS = /* @__PURE__ */ new Set([
-            "LP",
-            "LO",
-            "TU",
-            "LB",
-            "SM",
-            "WS",
-            "EX",
-            "VV",
-            "PR",
-            "CW",
-            "PC",
-            "AM",
-            "PM",
-            "HALL",
-            "LAB",
-            "ROOM",
-            "ONLINE",
-            "ZOOM",
-            "MON",
-            "TUE",
-            "WED",
-            "THU",
-            "FRI",
-            "SAT",
-            "SUN"
-          ]);
-          for (const w of words) {
-            if (/^[A-Z]{2,6}$/.test(w) && !IGNORE_WORDS.has(w) && w !== eventType) {
-              courseCode = w;
-              break;
+          const ampersandMatch = rawText.match(/\b([A-Za-z0-9]{2,5}\s*&\s*[A-Za-z0-9]{2,5})\b/i);
+          if (ampersandMatch) {
+            courseCode = ampersandMatch[1].toUpperCase();
+          } else {
+            const words = rawText.split(/[\s,–—~-]+/).map((w) => w.trim().toUpperCase());
+            const IGNORE_WORDS = /* @__PURE__ */ new Set([
+              "LP",
+              "LO",
+              "TU",
+              "LB",
+              "SM",
+              "WS",
+              "EX",
+              "VV",
+              "PR",
+              "CW",
+              "PC",
+              "AM",
+              "PM",
+              "HALL",
+              "LAB",
+              "ROOM",
+              "ONLINE",
+              "ZOOM",
+              "MON",
+              "TUE",
+              "WED",
+              "THU",
+              "FRI",
+              "SAT",
+              "SUN"
+            ]);
+            for (const w of words) {
+              if (/^[A-Z]{2,6}$/.test(w) && !IGNORE_WORDS.has(w) && w !== eventType) {
+                courseCode = w;
+                break;
+              }
             }
           }
         }
@@ -836,17 +972,17 @@
         }
         return;
       }
-      const BADGE_REGEX = /\b(LP|LO|TU|LB|SM|WS|EX|VV|PR|CW|PC)(?![a-z])\s*[-:]?\s*([A-Za-z0-9\s/-]{1,15})/i;
+      const BADGE_REGEX2 = /\b(LP|LO|TU|LB|SM|WS|EX|VV|PR|CW|PC)(?![a-z])\s*[-:]?\s*([A-Za-z0-9\s/&.-]{1,25})/i;
       const candidates = Array.from(cell.querySelectorAll("*")).filter((el) => {
         if (el.children.length > 2) return false;
         const t = getElementCleanText(el);
-        return t.length >= 3 && t.length <= 35 && BADGE_REGEX.test(t);
+        return t.length >= 3 && t.length <= 40 && BADGE_REGEX2.test(t);
       });
       const distinct = candidates.filter((el) => !Array.from(el.children).some((c) => candidates.includes(c)));
       if (distinct.length > 0) {
         for (const item of distinct) {
           const rawText = getElementCleanText(item);
-          const match = rawText.match(BADGE_REGEX);
+          const match = rawText.match(BADGE_REGEX2);
           if (!match) continue;
           const eventType = match[1].toUpperCase();
           let courseCode = match[2].trim();
@@ -976,23 +1112,26 @@
   }
   function scrapeAcaBadges(doc, context) {
     const events = [];
-    const TYPE_PREFIXES = "LP|LO|TU|LB|SM|WS|EX|VV|PR|CW|PC";
-    const BADGE_REGEX = new RegExp(`(?:^|\\b)(${TYPE_PREFIXES})(?:\\b|\\s*[-:]?\\s*)([A-Za-z0-9\\s/-]{1,15})`, "i");
+    const TYPE_PREFIXES2 = "LP|LO|TU|LB|SM|WS|EX|VV|PR|CW|PC";
+    const BADGE_REGEX2 = new RegExp(`(?:^|\\b)(${TYPE_PREFIXES2})(?:\\b|\\s*[-:]?\\s*)([A-Za-z0-9\\s/&.-]{1,25})`, "i");
     const candidates = Array.from(doc.querySelectorAll("*")).filter((el) => {
       if (["SCRIPT", "STYLE", "SVG", "PATH", "HEAD"].includes(el.tagName)) return false;
       if (el.closest('footer, [role="dialog"], header, nav')) return false;
       if (el.children.length > 3) return false;
       const t = getElementCleanText(el);
       if (t.length < 3 || t.length > 40) return false;
-      if (t.toLowerCase().includes("lecture (physical)") || t.toLowerCase().includes("lecture (online)")) return false;
-      return BADGE_REGEX.test(t);
+      const lower = t.toLowerCase();
+      if (lower.includes("lecture (physical)") || lower.includes("lecture (online)") || lower.includes("course work") || lower.includes("seminar") || lower.includes("workshop") || lower.includes("presentation")) {
+        return false;
+      }
+      return BADGE_REGEX2.test(t);
     });
     const distinct = candidates.filter((el) => {
       return !Array.from(el.children).some((c) => candidates.includes(c));
     });
     for (const badge of distinct) {
       const rawText = getElementCleanText(badge);
-      const match = rawText.match(BADGE_REGEX);
+      const match = rawText.match(BADGE_REGEX2);
       if (!match) continue;
       const eventType = match[1].toUpperCase();
       let courseCode = match[2].trim();
@@ -1052,92 +1191,201 @@
     return events;
   }
   function scrapeActiveModal(doc = document, context) {
-    const dialog = doc.querySelector('[role="dialog"], [class*="modal"], [class*="popup"], div[class*="fixed"][class*="z-"]');
+    const dialog = doc.querySelector(
+      '[role="dialog"], [class*="modal"], [class*="popup"], div[class*="fixed"][class*="z-"]'
+    );
     if (!dialog) return null;
-    const text = getElementCleanText(dialog);
-    if (!text.includes("AM") && !text.includes("PM") && !text.includes(":") && !text.includes("202")) return null;
+    const fullText = (dialog.textContent || "").replace(/\s+/g, " ").trim();
+    if (!fullText.includes("AM") && !fullText.includes("PM") && !fullText.includes(":") && !fullText.includes("202")) {
+      return null;
+    }
+    const leafNodes = Array.from(dialog.querySelectorAll("*")).filter((el) => {
+      if (el.children.length > 0) return false;
+      if (["BUTTON", "SCRIPT", "STYLE", "SVG", "PATH"].includes(el.tagName)) return false;
+      const t = (el.textContent || "").trim();
+      return t.length > 0 && t !== "\u2715" && t !== "x" && t !== "X";
+    });
+    const leafTexts = leafNodes.map((el) => (el.textContent || "").replace(/\s+/g, " ").trim());
     let courseCode = "";
-    const titleEl = dialog.querySelector('h1, h2, h3, h4, strong, [class*="font-bold"]');
-    if (titleEl) {
-      const ht = getElementCleanText(titleEl);
-      if (ht.length <= 15 && !ht.includes("AM") && !ht.includes("202")) {
-        courseCode = ht;
+    const headerEl = dialog.querySelector('h1, h2, h3, h4, [class*="title"], [class*="header"]');
+    if (headerEl) {
+      const hText = (headerEl.textContent || "").trim();
+      if (hText && hText.length <= 25 && !hText.includes("AM") && !hText.includes("PM") && !hText.includes(":")) {
+        courseCode = hText;
       }
     }
     let date = "";
-    const dateMatch = text.match(/([A-Z][a-z]+),\s+([A-Z][a-z]+)\s+(\d{1,2}),\s+(\d{4})/);
-    if (dateMatch) {
-      const MONTHS = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December"
-      ];
-      const mIdx = MONTHS.indexOf(dateMatch[2]) + 1;
-      const day = parseInt(dateMatch[3], 10);
-      const year = parseInt(dateMatch[4], 10);
-      if (mIdx > 0) {
-        date = formatISODate(year, mIdx, day);
-      }
-    }
     let startTime = "";
     let endTime = "";
-    const timeMatch = text.match(/(\d{1,2}[:.]\d{2}\s*(?:am|pm)?)\s*[–—~-]\s*(\d{1,2}[:.]\d{2}\s*(?:am|pm)?)/i);
-    if (timeMatch) {
-      startTime = normalizeTimeString(timeMatch[1]);
-      endTime = normalizeTimeString(timeMatch[2]);
-    }
     let lecturer = "";
-    const pEls = Array.from(dialog.querySelectorAll("p, div, span"));
-    for (const pel of pEls) {
-      if (pel.children.length > 2) continue;
-      const pt = getElementCleanText(pel);
-      const m = pt.match(/\b((?:Dr|Prof|Mr|Ms|Mrs)\.?\s+(?:[A-Z]\.?\s+)*[A-Za-z]+(?:\s+[A-Za-z]+){1,3})\b/);
-      if (m && !pt.includes("Hall")) {
-        lecturer = m[1].trim();
-        break;
-      }
-    }
     let room = "";
-    for (const pel of pEls) {
-      if (pel.children.length > 2) continue;
-      const pt = getElementCleanText(pel);
-      if (/^(?:Lecture\s+Hall|Hall|Lab|Room|LH|Audi|Auditorium)\b/i.test(pt)) {
-        room = pt;
-        break;
+    let type = "";
+    const MONTHS = [
+      "January",
+      "February",
+      "March",
+      "April",
+      "May",
+      "June",
+      "July",
+      "August",
+      "September",
+      "October",
+      "November",
+      "December"
+    ];
+    const isStatusBadge = (s) => /^(?:APPROVED|PENDING|CANCELLED|RESCHEDULED|COMPLETED)$/i.test(s.trim());
+    const isTypeBadge = (s) => {
+      const up = s.toUpperCase().replace(/_/g, " ");
+      return up.includes("LECTURE PHYSICAL") || up.includes("LECTURE ONLINE") || up.includes("TUTORIAL") || up.includes("PRACTICAL") || up.includes("WORKSHOP") || up.includes("SEMINAR") || up.includes("EXAM") || up.includes("VIVA") || ["LP", "LO", "TU", "LB", "SM", "WS", "EX", "VV", "PR", "CW", "PC"].includes(up);
+    };
+    for (const text of leafTexts) {
+      const dateMatch = text.match(/([A-Z][a-z]+),\s+([A-Z][a-z]+)\s+(\d{1,2}),\s+(\d{4})/);
+      if (dateMatch && !date) {
+        const mIdx = MONTHS.indexOf(dateMatch[2]) + 1;
+        const day = parseInt(dateMatch[3], 10);
+        const year = parseInt(dateMatch[4], 10);
+        if (mIdx > 0) {
+          date = formatISODate(year, mIdx, day);
+        }
+        continue;
+      }
+      const timeMatch = text.match(/(\d{1,2}[:.]\d{2}\s*(?:am|pm)?)\s*[–—~-]\s*(\d{1,2}[:.]\d{2}\s*(?:am|pm)?)/i);
+      if (timeMatch && !startTime) {
+        startTime = normalizeTimeString(timeMatch[1]);
+        endTime = normalizeTimeString(timeMatch[2]);
+        continue;
+      }
+      if (/^(?:Lecture\s+Hall|Hall|Lab|Room|LH|Audi|Auditorium)\b/i.test(text) || /\b(?:Lecture\s+Hall|Hall\s+\d+|Lab\s+\d+|Room\s+\d+|1st\s+Fl|2nd\s+Fl|Floor|1st\s+H)\b/i.test(text) || /^[A-Za-z0-9\s-]+\s+(?:Hall|Lab|Room|Auditorium|Fl|Floor|H)\b/i.test(text)) {
+        if (!room) {
+          room = text.replace(/\b(?:LECTURE\s+(?:PHYSICAL|ONLINE)|APPROVED|PENDING|TUTORIAL|LAB)\b.*/i, "").trim();
+          continue;
+        }
+      }
+      if (isTypeBadge(text)) {
+        const up = text.toUpperCase().replace(/_/g, " ");
+        if (up.includes("LECTURE ONLINE") || up === "LO") {
+          type = "LO";
+        } else if (up.includes("TUTORIAL") || up === "TU") {
+          type = "TU";
+        } else if (up.includes("LAB") || up === "LB") {
+          type = "LB";
+        } else if (up.includes("PRACTICAL") || up === "PC") {
+          type = "PC";
+        } else if (up.includes("EXAM") || up === "EX") {
+          type = "EX";
+        } else if (up.includes("VIVA") || up === "VV") {
+          type = "VV";
+        } else {
+          type = "LP";
+        }
+        continue;
+      }
+      if (isStatusBadge(text)) {
+        continue;
+      }
+      if (!courseCode && text.length <= 15 && !dateMatch && !timeMatch) {
+        courseCode = text;
+        continue;
+      }
+      if (courseCode && text === courseCode) {
+        continue;
+      }
+      if (!lecturer && text !== courseCode) {
+        if (/^(?:Dr|Prof|Mr|Ms|Mrs|Miss|Eng|Rev)\.?\s+/i.test(text) || /^[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+$/.test(text) && !/^(?:Lecture\s+Hall|Room|Hall|Lab)/i.test(text)) {
+          lecturer = text;
+          continue;
+        }
       }
     }
     if (!room) {
-      const roomMatch = text.match(
-        /\b((?:Lecture\s+Hall|Hall|Lab|Room|LH|Audi|Auditorium)[-\s]?[A-Za-z0-9]+(?:\s*-\s*[A-Za-z0-9\s]+)?)\b/i
-      );
-      if (roomMatch) {
-        room = roomMatch[1].trim();
+      const pinIcons = Array.from(dialog.querySelectorAll("svg")).filter((svg) => {
+        const p = (svg.innerHTML || "").toLowerCase();
+        const c = (svg.className || "").toString().toLowerCase();
+        return c.includes("map") || c.includes("pin") || p.includes("m21 10c0") || p.includes('circle cx="12" cy="10"');
+      });
+      for (const svg of pinIcons) {
+        const row = svg.closest("div, p, li");
+        if (row) {
+          const rowText = (row.textContent || "").replace(/\s+/g, " ").trim();
+          if (rowText && rowText !== lecturer && rowText !== courseCode) {
+            room = rowText.replace(/\b(?:LECTURE\s+(?:PHYSICAL|ONLINE)|APPROVED|PENDING|TUTORIAL|LAB)\b.*/i, "").trim();
+            break;
+          }
+        }
       }
     }
-    let type = "";
-    const upper = text.toUpperCase();
-    if (upper.includes("LECTURE_PHYSICAL") || upper.includes("LECTURE PHYSICAL") || upper.includes("LP")) {
-      type = "LP";
-    } else if (upper.includes("LECTURE_ONLINE") || upper.includes("LECTURE ONLINE") || upper.includes("LO")) {
-      type = "LO";
-    } else if (upper.includes("TUTORIAL") || upper.includes("TU")) {
-      type = "TU";
-    } else if (upper.includes("LAB") || upper.includes("LB")) {
-      type = "LB";
+    if (!lecturer) {
+      const userIcons = Array.from(dialog.querySelectorAll("svg")).filter((svg) => {
+        const p = (svg.innerHTML || "").toLowerCase();
+        const c = (svg.className || "").toString().toLowerCase();
+        return c.includes("user") || c.includes("person") || p.includes("m19 21v-2a4") || p.includes('circle cx="12" cy="7"');
+      });
+      for (const svg of userIcons) {
+        const row = svg.closest("div, p, li");
+        if (row) {
+          const rowText = (row.textContent || "").replace(/\s+/g, " ").trim();
+          if (rowText && rowText !== room && rowText !== courseCode) {
+            lecturer = rowText;
+            break;
+          }
+        }
+      }
+    }
+    if (!date) {
+      const dm = fullText.match(/([A-Z][a-z]+),\s+([A-Z][a-z]+)\s+(\d{1,2}),\s+(\d{4})/);
+      if (dm) {
+        const mIdx = MONTHS.indexOf(dm[2]) + 1;
+        const day = parseInt(dm[3], 10);
+        const year = parseInt(dm[4], 10);
+        if (mIdx > 0) date = formatISODate(year, mIdx, day);
+      }
+    }
+    if (!startTime) {
+      const tm = fullText.match(/(\d{1,2}[:.]\d{2}\s*(?:am|pm)?)\s*[–—~-]\s*(\d{1,2}[:.]\d{2}\s*(?:am|pm)?)/i);
+      if (tm) {
+        startTime = normalizeTimeString(tm[1]);
+        endTime = normalizeTimeString(tm[2]);
+      }
+    }
+    if (!room) {
+      const rm = fullText.match(
+        /\b((?:Lecture\s+Hall|Hall|Lab|Room|LH|Audi|Auditorium)\s+[A-Za-z0-9]+(?:\s*-\s*[A-Za-z0-9]+(?:\s+Fl|\s+Floor)?)?)\b/i
+      );
+      if (rm) {
+        room = rm[1].trim();
+      }
+    }
+    if (!lecturer) {
+      const lm = fullText.match(
+        /\b((?:Dr|Prof|Mr|Ms|Mrs|Miss|Eng|Rev)\.?\s+(?:[A-Za-z]\.?\s*)*[A-Za-z]+(?:\s+[A-Za-z]+)*)\b/i
+      );
+      if (lm && !lm[1].includes("Hall") && !lm[1].includes("Room")) {
+        lecturer = lm[1].trim();
+      }
+    }
+    if (!type) {
+      const up = fullText.toUpperCase().replace(/_/g, " ");
+      if (up.includes("LECTURE ONLINE") || up.includes("LO")) {
+        type = "LO";
+      } else if (up.includes("TUTORIAL") || up.includes("TU")) {
+        type = "TU";
+      } else if (up.includes("PRACTICAL") || up.includes("PC")) {
+        type = "PC";
+      } else if (up.includes("LAB") || up.includes("LB")) {
+        type = "LB";
+      } else if (up.includes("EXAM") || up.includes("EX")) {
+        type = "EX";
+      } else if (up.includes("VIVA") || up.includes("VV")) {
+        type = "VV";
+      } else {
+        type = "LP";
+      }
     }
     const { mode, typeLabel } = resolveTypeInfo(type);
     const fallbackDate = context ? formatISODate(context.year, context.month, 1) : "";
     return {
-      date: date || fallbackDate,
+      date: date || "",
       startTime,
       endTime,
       courseCode,
@@ -1248,6 +1496,590 @@
     }
   }
 
+  // src/content/card-enricher.ts
+  var TYPE_PREFIXES = "LP|LO|TU|LB|SM|WS|EX|VV|PR|CW|PC";
+  var BADGE_REGEX = new RegExp(`(?:^|\\b)(${TYPE_PREFIXES})(?:\\b|\\s*[-:]?\\s*)([A-Za-z0-9\\s/&.-]{1,25})`, "i");
+  function isLegendElement(el) {
+    if (el.closest('footer, [class*="legend" i], [data-testid*="legend" i]')) {
+      return true;
+    }
+    const text = (el.textContent || "").trim().toLowerCase();
+    const legendPhrases = [
+      "lecture (physical)",
+      "lecture (online)",
+      "course work",
+      "seminar",
+      "workshop",
+      "presentation",
+      "tutorial",
+      "practical"
+    ];
+    if (legendPhrases.some((p) => text === p || text === `sm ${p}` || text === `ws ${p}` || text === `lp ${p}`)) {
+      return true;
+    }
+    let curr = el.parentElement;
+    for (let depth = 0; depth < 5 && curr; depth++) {
+      if (curr === document.body || curr.tagName === "MAIN") break;
+      const cText = (curr.textContent || "").toLowerCase();
+      if ((cText.includes("lecture (physical)") || cText.includes("lecture (online)")) && (cText.includes("tutorial") || cText.includes("exam") || cText.includes("viva"))) {
+        return true;
+      }
+      curr = curr.parentElement;
+    }
+    return false;
+  }
+  function collectCalendarCards(doc = document, context) {
+    const cardDescriptors = [];
+    const activeHeading = getCalendarHeading(doc);
+    const parsedHM = activeHeading ? parseHeadingMonthYear(activeHeading) : null;
+    const activeContext = {
+      ...context,
+      year: parsedHM?.year || context.year,
+      month: parsedHM?.month || context.month,
+      periodLabel: activeHeading || context.periodLabel
+    };
+    const cellSelectors = [
+      '[role="gridcell"]',
+      'td[class*="day"]',
+      "td",
+      '[data-testid*="day-cell"]',
+      '[data-testid*="calendar-day"]',
+      'div[class*="calendar-day"]',
+      'div[class*="day-cell"]',
+      'div[class*="DayCell"]',
+      'div[class*="calendar_cell"]',
+      ".rbc-day-bg",
+      ".fc-daygrid-day"
+    ];
+    let cells = [];
+    for (const selector of cellSelectors) {
+      const found = Array.from(doc.querySelectorAll(selector));
+      if (found.length >= 28) {
+        cells = found;
+        break;
+      }
+    }
+    if (cells.length === 0) {
+      const grids = doc.querySelectorAll('[role="grid"], .grid, div[class*="grid"]');
+      for (const grid of Array.from(grids)) {
+        const children = Array.from(grid.children);
+        if (children.length >= 28 && children.length <= 49) {
+          const dayHeaderNames = ["mon", "tue", "wed", "thu", "fri", "sat", "sun", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+          const nonHeaderCells = children.filter((c) => {
+            const t = getElementCleanText(c).toLowerCase();
+            return !dayHeaderNames.includes(t);
+          });
+          if (nonHeaderCells.length >= 28) {
+            cells = nonHeaderCells;
+            break;
+          }
+        }
+      }
+    }
+    if (cells.length > 0) {
+      cells.forEach((cell, index) => {
+        let resolvedDate = "";
+        const dateAttr = cell.getAttribute("data-date") || cell.getAttribute("data-day");
+        if (dateAttr && /^\d{4}-\d{2}-\d{2}$/.test(dateAttr)) {
+          resolvedDate = dateAttr;
+        } else {
+          let dayNum = null;
+          const allDesc = Array.from(cell.querySelectorAll("*"));
+          for (const d of allDesc) {
+            if (d.children.length > 0) continue;
+            const t = getElementCleanText(d);
+            if (/^([1-9]|[12]\d|3[01])$/.test(t)) {
+              dayNum = parseInt(t, 10);
+              break;
+            }
+            const mName = t.match(/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[,\s]+([1-9]|[12]\d|3[01])$/i);
+            if (mName) {
+              dayNum = parseInt(mName[1], 10);
+              break;
+            }
+          }
+          if (dayNum === null) {
+            const cleanCell = getElementCleanText(cell);
+            const startMatch = cleanCell.match(/^([1-9]|[12]\d|3[01])\b/);
+            if (startMatch) dayNum = parseInt(startMatch[1], 10);
+          }
+          if (dayNum !== null) {
+            const isOutside = isCellOutsideMonth(cell);
+            resolvedDate = resolveCellDate(dayNum, isOutside, index, activeContext);
+          }
+        }
+        if (!resolvedDate) return;
+        const structuredCards = Array.from(
+          cell.querySelectorAll('.event-card, [class*="event-card"], [class*="event-pill"], [class*="lecture-badge"]')
+        ).filter((sc) => !isLegendElement(sc));
+        if (structuredCards.length > 0) {
+          for (const sc of structuredCards) {
+            cardDescriptors.push({
+              element: sc,
+              cellDate: resolvedDate,
+              previewText: getElementCleanText(sc)
+            });
+          }
+          return;
+        }
+        const candidates = Array.from(cell.querySelectorAll("*")).filter((el) => {
+          if (el.children.length > 2) return false;
+          if (isLegendElement(el)) return false;
+          const t = getElementCleanText(el);
+          return t.length >= 3 && t.length <= 40 && BADGE_REGEX.test(t);
+        });
+        const distinct = candidates.filter(
+          (el) => !Array.from(el.children).some((c) => candidates.includes(c))
+        );
+        for (const badge of distinct) {
+          let clickable = badge;
+          let curr = badge;
+          while (curr && curr !== cell && curr !== doc.body) {
+            const tag = curr.tagName.toLowerCase();
+            const cls = (curr.className || "").toString().toLowerCase();
+            const role = curr.getAttribute("role") || "";
+            if (tag === "button" || tag === "a" || role === "button" || cls.includes("cursor-pointer") || cls.includes("event") || cls.includes("badge") || cls.includes("pill") || cls.includes("card")) {
+              clickable = curr;
+              break;
+            }
+            curr = curr.parentElement;
+          }
+          const rawText = getElementCleanText(badge);
+          const match = rawText.match(BADGE_REGEX);
+          const typeHint = match ? match[1].toUpperCase() : void 0;
+          let courseHint = match ? match[2].trim() : void 0;
+          if (courseHint && courseHint.startsWith("-")) courseHint = courseHint.slice(1).trim();
+          cardDescriptors.push({
+            element: clickable,
+            cellDate: resolvedDate,
+            previewText: rawText,
+            typeHint,
+            courseHint
+          });
+        }
+      });
+    }
+    if (cardDescriptors.length === 0) {
+      const allCandidates = Array.from(doc.querySelectorAll("*")).filter((el) => {
+        if (["SCRIPT", "STYLE", "SVG", "PATH", "HEAD", "NAV", "HEADER", "FOOTER"].includes(el.tagName)) return false;
+        if (el.closest('footer, [role="dialog"], header, nav')) return false;
+        if (isLegendElement(el)) return false;
+        if (el.children.length > 3) return false;
+        const t = getElementCleanText(el);
+        return t.length >= 3 && t.length <= 40 && BADGE_REGEX.test(t);
+      });
+      const distinct = allCandidates.filter(
+        (el) => !Array.from(el.children).some((c) => allCandidates.includes(c))
+      );
+      for (const badge of distinct) {
+        const resolvedDate = findDateForCard(badge, activeContext);
+        const rawText = getElementCleanText(badge);
+        const match = rawText.match(BADGE_REGEX);
+        if (resolvedDate) {
+          cardDescriptors.push({
+            element: badge,
+            cellDate: resolvedDate,
+            previewText: rawText,
+            typeHint: match ? match[1].toUpperCase() : void 0,
+            courseHint: match ? match[2].trim() : void 0
+          });
+        }
+      }
+    }
+    return cardDescriptors;
+  }
+  function simulateClick(element) {
+    try {
+      element.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
+    } catch {
+    }
+    const rect = element.getBoundingClientRect();
+    const clientX = rect.left + Math.max(rect.width / 2, 2);
+    const clientY = rect.top + Math.max(rect.height / 2, 2);
+    const opts = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      clientX,
+      clientY
+    };
+    try {
+      if (typeof PointerEvent !== "undefined") {
+        element.dispatchEvent(new PointerEvent("pointerdown", opts));
+      }
+    } catch {
+    }
+    element.dispatchEvent(new MouseEvent("mousedown", opts));
+    try {
+      if (typeof PointerEvent !== "undefined") {
+        element.dispatchEvent(new PointerEvent("pointerup", opts));
+      }
+    } catch {
+    }
+    element.dispatchEvent(new MouseEvent("mouseup", opts));
+    element.dispatchEvent(new MouseEvent("click", opts));
+    if (typeof element.click === "function") {
+      element.click();
+    }
+  }
+  function getOpenModal(doc = document) {
+    const dialogs = doc.querySelectorAll(
+      '[role="dialog"], [aria-modal="true"], div[data-state="open"][role="dialog"], div[data-radix-portal] div[role="dialog"], div[class*="dialog" i], div[class*="modal" i], div[class*="popup" i], div[class*="fixed"][class*="z-"]'
+    );
+    for (const el of Array.from(dialogs)) {
+      if (el.id === "nibm-scraper-overlay" || el.closest("#nibm-scraper-overlay")) continue;
+      const htmlEl = el;
+      const text = (el.textContent || "").trim();
+      if (text.length < 5) continue;
+      const isExplicitDialog = el.getAttribute("role") === "dialog" || el.getAttribute("aria-modal") === "true" || el.hasAttribute("data-radix-portal") || el.classList.contains("modal") || el.classList.contains("dialog");
+      if (isExplicitDialog) {
+        return htmlEl;
+      }
+      const hasTime = /\d{1,2}[:.]\d{2}/.test(text) || /\b(?:am|pm)\b/i.test(text);
+      const hasTimetableContent = /(?:lecture|exam|tutorial|practical|seminar|workshop|hall|room|online|dr\.|prof\.|approved|pending|module|course|batch)/i.test(text);
+      if (hasTime || hasTimetableContent) {
+        return htmlEl;
+      }
+    }
+    return null;
+  }
+  async function closeAnyOpenModal(doc = document) {
+    const modal = getOpenModal(doc);
+    if (!modal) return true;
+    const buttons = Array.from(modal.querySelectorAll('button, [role="button"]'));
+    const closeBtn = buttons.find((b) => {
+      const aria = (b.getAttribute("aria-label") || "").toLowerCase();
+      const title = (b.getAttribute("title") || "").toLowerCase();
+      const cls = (b.className || "").toString().toLowerCase();
+      const txt = (b.textContent || "").trim().toLowerCase();
+      return aria.includes("close") || title.includes("close") || cls.includes("close") || txt === "\u2715" || txt === "\xD7" || txt === "x" || txt === "close" || b.querySelector('svg.lucide-x, svg[class*="close"]') !== null;
+    }) || buttons.find((b) => b.querySelector("svg") !== null);
+    if (closeBtn) {
+      simulateClick(closeBtn);
+    }
+    const escOpts = { key: "Escape", code: "Escape", keyCode: 27, which: 27, bubbles: true, cancelable: true };
+    modal.dispatchEvent(new KeyboardEvent("keydown", escOpts));
+    doc.dispatchEvent(new KeyboardEvent("keydown", escOpts));
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new KeyboardEvent("keydown", escOpts));
+    }
+    const backdrop = doc.querySelector('div[class*="backdrop"], div[class*="overlay"], [data-state="open"][class*="fixed"]');
+    if (backdrop && backdrop !== modal && !modal.contains(backdrop)) {
+      simulateClick(backdrop);
+    }
+    for (let i = 0; i < 10; i++) {
+      await new Promise((r) => setTimeout(r, 35));
+      if (!getOpenModal(doc)) return true;
+    }
+    return !getOpenModal(doc);
+  }
+  async function waitForModal(doc = document, maxWaitMs = 650) {
+    const startTime = Date.now();
+    while (Date.now() - startTime < maxWaitMs) {
+      const modal = getOpenModal(doc);
+      if (modal) return modal;
+      await new Promise((r) => setTimeout(r, 30));
+    }
+    return getOpenModal(doc);
+  }
+  var overlayElement = null;
+  var cancelRequested = false;
+  function showScraperOverlay(doc = document, text, onStop) {
+    if (overlayElement) {
+      updateScraperOverlay(text);
+      return;
+    }
+    cancelRequested = false;
+    const overlay = doc.createElement("div");
+    overlay.id = "nibm-scraper-overlay";
+    overlay.setAttribute("style", `
+    position: fixed;
+    top: 18px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 2147483647;
+    background: #0f172a;
+    color: #f8fafc;
+    padding: 10px 18px;
+    border-radius: 9999px;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 13px;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    pointer-events: auto;
+    transition: all 0.2s ease;
+  `);
+    overlay.innerHTML = `
+    <div style="width: 14px; height: 14px; border: 2px solid #38bdf8; border-top-color: transparent; border-radius: 50%; animation: nibm-spin 0.8s linear infinite;"></div>
+    <span id="nibm-overlay-msg">${text}</span>
+    <button id="nibm-overlay-stop-btn" style="background: #ef4444; color: white; border: none; border-radius: 6px; padding: 3px 9px; font-size: 11px; font-weight: 600; cursor: pointer; transition: opacity 0.2s;">Stop</button>
+    <style>
+      @keyframes nibm-spin { to { transform: rotate(360deg); } }
+      #nibm-overlay-stop-btn:hover { opacity: 0.85; }
+    </style>
+  `;
+    const stopBtn = overlay.querySelector("#nibm-overlay-stop-btn");
+    if (stopBtn) {
+      stopBtn.onclick = () => {
+        cancelRequested = true;
+        if (onStop) onStop();
+        updateScraperOverlay("Cancelling...");
+      };
+    }
+    (doc.body || doc.documentElement).appendChild(overlay);
+    overlayElement = overlay;
+  }
+  function updateScraperOverlay(text) {
+    if (!overlayElement) return;
+    const msgEl = overlayElement.querySelector("#nibm-overlay-msg");
+    if (msgEl) msgEl.textContent = text;
+  }
+  function hideScraperOverlay(successMessage) {
+    if (!overlayElement) return;
+    if (successMessage) {
+      overlayElement.innerHTML = `
+      <span style="color: #4ade80; font-weight: 600;">\u2713</span>
+      <span style="color: #f8fafc;">${successMessage}</span>
+    `;
+      setTimeout(() => {
+        overlayElement?.remove();
+        overlayElement = null;
+      }, 2200);
+    } else {
+      overlayElement.remove();
+      overlayElement = null;
+    }
+  }
+  async function enrichAllCardsSequentially(doc = document, context, onProgress) {
+    const activeHeading = getCalendarHeading(doc);
+    const parsedHM = activeHeading ? parseHeadingMonthYear(activeHeading) : null;
+    const activeContext = {
+      ...context,
+      year: parsedHM?.year || context.year,
+      month: parsedHM?.month || context.month,
+      periodLabel: activeHeading || context.periodLabel
+    };
+    const cards = collectCalendarCards(doc, activeContext);
+    if (cards.length === 0) {
+      return [];
+    }
+    await closeAnyOpenModal(doc);
+    showScraperOverlay(
+      doc,
+      `Scraping timetable cards: 0 of ${cards.length} (0%)...`,
+      () => {
+        cancelRequested = true;
+      }
+    );
+    const enrichedEvents = [];
+    for (let i = 0; i < cards.length; i++) {
+      if (cancelRequested) {
+        break;
+      }
+      const card = cards[i];
+      const cardNum = i + 1;
+      const percent = Math.round(cardNum / cards.length * 100);
+      const label = `Scraping card ${cardNum} of ${cards.length}: ${card.previewText} (${percent}%)...`;
+      updateScraperOverlay(label);
+      if (onProgress) {
+        onProgress({
+          current: cardNum,
+          total: cards.length,
+          cardText: card.previewText
+        });
+      }
+      simulateClick(card.element);
+      let modal = await waitForModal(doc, 700);
+      if (!modal) {
+        if (card.element.firstElementChild) {
+          simulateClick(card.element.firstElementChild);
+          modal = await waitForModal(doc, 450);
+        } else if (card.element.parentElement) {
+          simulateClick(card.element.parentElement);
+          modal = await waitForModal(doc, 450);
+        }
+      }
+      if (modal) {
+        const modalData = scrapeActiveModal(doc, activeContext);
+        const finalDate = card.cellDate && /^\d{4}-\d{2}-\d{2}$/.test(card.cellDate) ? card.cellDate : modalData?.date || card.cellDate;
+        const finalCourse = modalData?.courseCode || card.courseHint || card.previewText;
+        const finalType = modalData?.type || card.typeHint || "LP";
+        const { typeLabel, mode } = resolveTypeInfo(finalType);
+        const event = normalizeEvent(
+          {
+            date: finalDate,
+            dayOfWeek: getDayOfWeekName(finalDate),
+            startTime: modalData?.startTime || "",
+            endTime: modalData?.endTime || "",
+            type: finalType,
+            typeLabel: modalData?.typeLabel || typeLabel,
+            courseCode: finalCourse,
+            courseName: modalData?.courseName || "",
+            lecturer: modalData?.lecturer || "",
+            room: modalData?.room || "",
+            mode: modalData?.mode || mode,
+            batch: activeContext.batch,
+            source: "dom",
+            rawText: modalData?.rawText || card.previewText
+          },
+          activeContext.batch
+        );
+        enrichedEvents.push(event);
+        if (onProgress) {
+          onProgress({
+            current: cardNum,
+            total: cards.length,
+            cardText: card.previewText,
+            event
+          });
+        }
+        await closeAnyOpenModal(doc);
+      } else {
+        const { typeLabel, mode } = resolveTypeInfo(card.typeHint || "LP");
+        const fallbackEvent = normalizeEvent(
+          {
+            date: card.cellDate,
+            dayOfWeek: getDayOfWeekName(card.cellDate),
+            startTime: "",
+            endTime: "",
+            type: card.typeHint || "LP",
+            typeLabel,
+            courseCode: card.courseHint || card.previewText,
+            courseName: "",
+            lecturer: "",
+            room: mode === "Online" ? "Online" : "",
+            mode,
+            batch: activeContext.batch,
+            source: "dom",
+            rawText: card.previewText
+          },
+          activeContext.batch
+        );
+        enrichedEvents.push(fallbackEvent);
+      }
+      await new Promise((r) => setTimeout(r, 45));
+    }
+    await closeAnyOpenModal(doc);
+    hideScraperOverlay(
+      `Done! ${enrichedEvents.length} timetable cards scraped & enriched successfully.`
+    );
+    if (onProgress) {
+      onProgress({
+        current: cards.length,
+        total: cards.length,
+        cardText: "Completed",
+        isComplete: true
+      });
+    }
+    return enrichedEvents;
+  }
+  function findNextMonthButton(doc = document) {
+    const ariaBtn = doc.querySelector(
+      'button[aria-label*="next" i], button[title*="next" i], button[aria-label*="Next Month" i]'
+    );
+    if (ariaBtn) return ariaBtn;
+    const svgs = doc.querySelectorAll("svg");
+    for (const svg of Array.from(svgs)) {
+      const cls = (svg.getAttribute("class") || "").toLowerCase();
+      const html = (svg.innerHTML || "").toLowerCase();
+      if (cls.includes("chevron-right") || cls.includes("arrow-right") || cls.includes("lucide-chevron-right") || html.includes("m9 18 6-6-6-6") || html.includes("9 5l7 7-7 7")) {
+        const btn = svg.closest("button");
+        if (btn) return btn;
+      }
+    }
+    const allButtons = Array.from(doc.querySelectorAll("button"));
+    for (const btn of allButtons) {
+      const txt = (btn.textContent || "").trim();
+      if (txt === ">" || txt === "\u203A" || txt === "\xBB") {
+        return btn;
+      }
+    }
+    const todayBtn = Array.from(doc.querySelectorAll("button")).find(
+      (b) => (b.textContent || "").trim().toLowerCase() === "today"
+    );
+    if (todayBtn) {
+      let prev = todayBtn.previousElementSibling;
+      while (prev) {
+        if (prev.tagName.toLowerCase() === "button") {
+          return prev;
+        }
+        prev = prev.previousElementSibling;
+      }
+    }
+    return null;
+  }
+  async function scanAllMonthsSequentially(doc = document, context, maxMonths = 6, onProgress) {
+    const accumulatedEvents = [];
+    let monthsScanned = 0;
+    let consecutiveEmptyMonths = 0;
+    cancelRequested = false;
+    while (monthsScanned < maxMonths && !cancelRequested) {
+      monthsScanned++;
+      await new Promise((r) => setTimeout(r, 400));
+      const currentHeading = getCalendarHeading(doc);
+      const parsedHM = currentHeading ? parseHeadingMonthYear(currentHeading) : null;
+      const activeYear = parsedHM?.year || context.year;
+      const activeMonth = parsedHM?.month || context.month;
+      const currentContext = {
+        ...context,
+        year: activeYear,
+        month: activeMonth,
+        periodLabel: currentHeading || `${context.periodLabel || "Month " + monthsScanned}`
+      };
+      const displayHeading = currentHeading || currentContext.periodLabel;
+      showScraperOverlay(
+        doc,
+        `[Month ${monthsScanned}] Scanning ${displayHeading}...`,
+        () => {
+          cancelRequested = true;
+        }
+      );
+      const monthEvents = await enrichAllCardsSequentially(doc, currentContext, (progress) => {
+        if (onProgress) {
+          onProgress({
+            ...progress,
+            cardText: `[${displayHeading}] ${progress.cardText}`
+          });
+        }
+      });
+      if (monthEvents.length > 0) {
+        accumulatedEvents.push(...monthEvents);
+        consecutiveEmptyMonths = 0;
+      } else {
+        consecutiveEmptyMonths++;
+      }
+      if (cancelRequested || consecutiveEmptyMonths >= 2) {
+        break;
+      }
+      const nextBtn = findNextMonthButton(doc);
+      if (!nextBtn) {
+        break;
+      }
+      const prevHeading = currentHeading;
+      simulateClick(nextBtn);
+      let advanced = false;
+      for (let wait = 0; wait < 35; wait++) {
+        await new Promise((r) => setTimeout(r, 70));
+        const newHeading = getCalendarHeading(doc);
+        if (newHeading && newHeading !== prevHeading) {
+          advanced = true;
+          break;
+        }
+      }
+      if (!advanced) {
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 600));
+    }
+    hideScraperOverlay(
+      `Multi-month scan completed! Collected ${accumulatedEvents.length} events across ${monthsScanned} months.`
+    );
+    return accumulatedEvents;
+  }
+
   // src/content/content.ts
   var currentState = {
     context: {
@@ -1314,16 +2146,20 @@
     } catch {
     }
     const combined = [
+      ...currentState.events,
       ...domResult.events,
-      ...apiEvents,
-      ...currentState.events.filter((e) => e.source === "api")
+      ...apiEvents
     ];
     const { uniqueEvents, duplicatesRemoved } = deduplicateEvents(combined);
     const strategy = apiEvents.length > 0 || currentState.events.some((e) => e.source === "api") ? domResult.events.length > 0 ? "hybrid" : "api" : "dom";
+    const multiPeriod = computeMultiMonthPeriodLabel(uniqueEvents, domResult.context.periodLabel);
     const summary = computeSummary(uniqueEvents, duplicatesRemoved, strategy);
     currentState = {
       ...currentState,
-      context: domResult.context,
+      context: {
+        ...domResult.context,
+        periodLabel: multiPeriod
+      },
       events: uniqueEvents,
       summary
     };
@@ -1398,38 +2234,49 @@
     };
   }
   async function autoEnrichFromModals() {
-    const TYPE_PREFIXES = "LP|LO|TU|LB|SM|WS|EX|VV|PR|CW|PC";
-    const badgeRegex = new RegExp(`(?:^|\\b)(${TYPE_PREFIXES})(?:\\b|\\s*[-:]?\\s*)([A-Za-z0-9\\s/-]{1,15})`, "i");
-    const candidates = Array.from(document.querySelectorAll("div, button, a")).filter((el) => {
-      if (el.closest('footer, header, nav, [role="dialog"]')) return false;
-      if (el.children.length > 2) return false;
-      const txt = getElementCleanText(el);
-      return txt.length >= 3 && txt.length <= 35 && badgeRegex.test(txt);
-    });
-    const badges = candidates.filter((el) => !Array.from(el.children).some((c) => candidates.includes(c)));
-    for (let i = 0; i < badges.length; i++) {
-      const badge = badges[i];
-      if (typeof badge.click !== "function") continue;
-      badge.click();
-      await new Promise((r) => setTimeout(r, 70));
-      const modalData = scrapeActiveModal(document, currentState.context);
-      if (modalData && modalData.date) {
-        mergeModalIntoEvents(currentState.events, modalData);
-      }
-      const closeBtn = document.querySelector(
-        '[role="dialog"] button, [class*="modal"] button, [class*="close"], [aria-label*="close"]'
-      );
-      if (closeBtn && typeof closeBtn.click === "function") {
-        closeBtn.click();
-      } else {
-        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
-      }
-      await new Promise((r) => setTimeout(r, 40));
+    if (currentState.debugMode) {
+      console.log("[NIBM Exporter] Starting automated card crawling & modal enrichment...");
     }
-    const { uniqueEvents, duplicatesRemoved } = deduplicateEvents(currentState.events);
-    currentState.events = uniqueEvents;
-    currentState.summary = computeSummary(uniqueEvents, duplicatesRemoved, "dom");
-    saveScraperState(currentState);
+    const activeHeading = getCalendarHeading(document);
+    const parsedHM = activeHeading ? parseHeadingMonthYear(activeHeading) : null;
+    const activeContext = {
+      ...currentState.context,
+      year: parsedHM?.year || currentState.context.year,
+      month: parsedHM?.month || currentState.context.month,
+      periodLabel: activeHeading || currentState.context.periodLabel
+    };
+    const enrichedEvents = await enrichAllCardsSequentially(
+      document,
+      activeContext,
+      (progress) => {
+        try {
+          chrome.runtime.sendMessage({
+            action: "ENRICH_PROGRESS",
+            payload: progress
+          }).catch(() => {
+          });
+        } catch {
+        }
+      }
+    );
+    if (enrichedEvents.length > 0) {
+      const combined = [
+        ...currentState.events,
+        ...enrichedEvents
+      ];
+      const { uniqueEvents, duplicatesRemoved } = deduplicateEvents(combined);
+      const multiPeriod = computeMultiMonthPeriodLabel(uniqueEvents, currentState.context.periodLabel);
+      currentState = {
+        ...currentState,
+        context: {
+          ...currentState.context,
+          periodLabel: multiPeriod
+        },
+        events: uniqueEvents,
+        summary: computeSummary(uniqueEvents, duplicatesRemoved, "dom")
+      };
+      saveScraperState(currentState);
+    }
     return currentState;
   }
   function setupMessageListener() {
@@ -1445,8 +2292,14 @@
             });
             break;
           case "SCAN_PAGE": {
-            runExtraction(true).then((result) => {
-              sendResponse(result);
+            runExtraction(true).then(async (result) => {
+              const needsEnrichment = result.events.length > 0 && result.events.some((e) => !e.lecturer || !e.room || !e.startTime);
+              if (needsEnrichment) {
+                const enriched = await autoEnrichFromModals();
+                sendResponse(enriched);
+              } else {
+                sendResponse(result);
+              }
             }).catch((err) => {
               sendResponse({ error: String(err) });
             });
@@ -1458,6 +2311,73 @@
             }).catch((err) => {
               sendResponse({ error: String(err) });
             });
+            break;
+          }
+          case "SCAN_ALL_MONTHS": {
+            const activeHeading = getCalendarHeading(document);
+            const parsedHM = activeHeading ? parseHeadingMonthYear(activeHeading) : null;
+            const activeContext = {
+              ...currentState.context,
+              year: parsedHM?.year || currentState.context.year,
+              month: parsedHM?.month || currentState.context.month,
+              periodLabel: activeHeading || currentState.context.periodLabel
+            };
+            scanAllMonthsSequentially(document, activeContext, 6, (progress) => {
+              try {
+                chrome.runtime.sendMessage({
+                  action: "ENRICH_PROGRESS",
+                  payload: progress
+                }).catch(() => {
+                });
+              } catch {
+              }
+            }).then((scannedEvents) => {
+              const combined = [...currentState.events, ...scannedEvents];
+              const { uniqueEvents, duplicatesRemoved } = deduplicateEvents(combined);
+              const multiPeriod = computeMultiMonthPeriodLabel(
+                uniqueEvents,
+                currentState.context.periodLabel
+              );
+              currentState = {
+                ...currentState,
+                context: {
+                  ...currentState.context,
+                  periodLabel: multiPeriod
+                },
+                events: uniqueEvents,
+                summary: computeSummary(uniqueEvents, duplicatesRemoved, "dom")
+              };
+              saveScraperState(currentState);
+              sendResponse(currentState);
+            }).catch((err) => {
+              sendResponse({ error: String(err) });
+            });
+            break;
+          }
+          case "CLEAR_DATA": {
+            currentState = {
+              ...currentState,
+              events: [],
+              summary: {
+                totalFound: 0,
+                uniqueCount: 0,
+                duplicatesRemoved: 0,
+                missingFieldsCount: 0,
+                missingFieldsBreakdown: {
+                  startTime: 0,
+                  endTime: 0,
+                  type: 0,
+                  courseCode: 0,
+                  courseName: 0,
+                  lecturer: 0,
+                  room: 0
+                },
+                strategyUsed: "none",
+                lastScannedAt: ""
+              }
+            };
+            saveScraperState(currentState);
+            sendResponse(currentState);
             break;
           }
           case "GET_STATE":
@@ -1484,21 +2404,49 @@
     document.addEventListener(
       "click",
       () => {
-        setTimeout(() => {
-          const modal = scrapeActiveModal(document, currentState.context);
-          if (modal && modal.date && modal.courseCode) {
-            const updated = mergeModalIntoEvents(currentState.events, modal);
-            if (updated) {
-              const { uniqueEvents, duplicatesRemoved } = deduplicateEvents(currentState.events);
-              currentState.events = uniqueEvents;
-              currentState.summary = computeSummary(uniqueEvents, duplicatesRemoved, "dom");
-              saveScraperState(currentState);
+        [100, 250, 450].forEach((delay) => {
+          setTimeout(() => {
+            const modal = scrapeActiveModal(document, currentState.context);
+            if (modal && modal.date && modal.courseCode && (modal.lecturer || modal.room || modal.startTime)) {
+              const updated = mergeModalIntoEvents(currentState.events, modal);
+              if (updated) {
+                const { uniqueEvents, duplicatesRemoved } = deduplicateEvents(currentState.events);
+                currentState.events = uniqueEvents;
+                currentState.summary = computeSummary(uniqueEvents, duplicatesRemoved, "dom");
+                saveScraperState(currentState);
+              }
             }
-          }
-        }, 150);
+          }, delay);
+        });
       },
       true
     );
+    try {
+      const modalObserver = new MutationObserver(() => {
+        const dialog = document.querySelector(
+          '[role="dialog"], [class*="modal"], [class*="popup"], div[class*="fixed"][class*="z-"]'
+        );
+        if (dialog) {
+          setTimeout(() => {
+            const modal = scrapeActiveModal(document, currentState.context);
+            if (modal && modal.date && modal.courseCode && (modal.lecturer || modal.room || modal.startTime)) {
+              const updated = mergeModalIntoEvents(currentState.events, modal);
+              if (updated) {
+                const { uniqueEvents, duplicatesRemoved } = deduplicateEvents(currentState.events);
+                currentState.events = uniqueEvents;
+                currentState.summary = computeSummary(uniqueEvents, duplicatesRemoved, "dom");
+                saveScraperState(currentState);
+              }
+            }
+          }, 80);
+        }
+      });
+      modalObserver.observe(document.body || document.documentElement, {
+        childList: true,
+        subtree: true
+      });
+    } catch {
+    }
   }
   async function initialize() {
     const saved = await loadScraperState();

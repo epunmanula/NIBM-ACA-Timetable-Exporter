@@ -142,12 +142,12 @@ function scrapeMonthView(doc: Document, context: CalendarContext): Partial<Timet
       return;
     }
 
-    // 2. Otherwise look for compact badges (real ACA website: LP MC, LP APF, TU APF)
-    const BADGE_REGEX = /\b(LP|LO|TU|LB|SM|WS|EX|VV|PR|CW|PC)(?![a-z])\s*[-:]?\s*([A-Za-z0-9\s/-]{1,15})/i;
+    // 2. Otherwise look for compact badges (real ACA website: LP MC, LP APF, TU APF, LP DL & CO)
+    const BADGE_REGEX = /\b(LP|LO|TU|LB|SM|WS|EX|VV|PR|CW|PC)(?![a-z])\s*[-:]?\s*([A-Za-z0-9\s/&.-]{1,25})/i;
     const candidates = Array.from(cell.querySelectorAll('*')).filter((el) => {
       if (el.children.length > 2) return false;
       const t = getElementCleanText(el);
-      return t.length >= 3 && t.length <= 35 && BADGE_REGEX.test(t);
+      return t.length >= 3 && t.length <= 40 && BADGE_REGEX.test(t);
     });
 
     const distinct = candidates.filter((el) => !Array.from(el.children).some((c) => candidates.includes(c)));
@@ -347,7 +347,7 @@ function extractReactPropsFromElement(el: Element): {
 function scrapeAcaBadges(doc: Document, context: CalendarContext): Partial<TimetableEvent>[] {
   const events: Partial<TimetableEvent>[] = [];
   const TYPE_PREFIXES = 'LP|LO|TU|LB|SM|WS|EX|VV|PR|CW|PC';
-  const BADGE_REGEX = new RegExp(`(?:^|\\b)(${TYPE_PREFIXES})(?:\\b|\\s*[-:]?\\s*)([A-Za-z0-9\\s/-]{1,15})`, 'i');
+  const BADGE_REGEX = new RegExp(`(?:^|\\b)(${TYPE_PREFIXES})(?:\\b|\\s*[-:]?\\s*)([A-Za-z0-9\\s/&.-]{1,25})`, 'i');
 
   // Query all leaf or near-leaf elements
   const candidates = Array.from(doc.querySelectorAll('*')).filter((el) => {
@@ -359,7 +359,17 @@ function scrapeAcaBadges(doc: Document, context: CalendarContext): Partial<Timet
 
     const t = getElementCleanText(el);
     if (t.length < 3 || t.length > 40) return false;
-    if (t.toLowerCase().includes('lecture (physical)') || t.toLowerCase().includes('lecture (online)')) return false;
+    const lower = t.toLowerCase();
+    if (
+      lower.includes('lecture (physical)') ||
+      lower.includes('lecture (online)') ||
+      lower.includes('course work') ||
+      lower.includes('seminar') ||
+      lower.includes('workshop') ||
+      lower.includes('presentation')
+    ) {
+      return false;
+    }
 
     return BADGE_REGEX.test(t);
   });
@@ -451,98 +461,245 @@ function scrapeAcaBadges(doc: Document, context: CalendarContext): Partial<Timet
  * If a lecture details modal is open on the page, extracts its rich metadata.
  */
 export function scrapeActiveModal(doc: Document = document, context?: CalendarContext): Partial<TimetableEvent> | null {
-  const dialog = doc.querySelector('[role="dialog"], [class*="modal"], [class*="popup"], div[class*="fixed"][class*="z-"]');
+  const dialog = doc.querySelector(
+    '[role="dialog"], [class*="modal"], [class*="popup"], div[class*="fixed"][class*="z-"]'
+  );
   if (!dialog) return null;
 
-  const text = getElementCleanText(dialog);
-  if (!text.includes('AM') && !text.includes('PM') && !text.includes(':') && !text.includes('202')) return null;
+  const fullText = (dialog.textContent || '').replace(/\s+/g, ' ').trim();
+  if (!fullText.includes('AM') && !fullText.includes('PM') && !fullText.includes(':') && !fullText.includes('202')) {
+    return null;
+  }
 
-  // Title / Course code (e.g. "MC", "APF")
+  // 1. Gather all non-empty leaf text nodes
+  const leafNodes = Array.from(dialog.querySelectorAll('*')).filter((el) => {
+    if (el.children.length > 0) return false;
+    if (['BUTTON', 'SCRIPT', 'STYLE', 'SVG', 'PATH'].includes(el.tagName)) return false;
+    const t = (el.textContent || '').trim();
+    return t.length > 0 && t !== '✕' && t !== 'x' && t !== 'X';
+  });
+
+  const leafTexts = leafNodes.map((el) => (el.textContent || '').replace(/\s+/g, ' ').trim());
+
   let courseCode = '';
-  const titleEl = dialog.querySelector('h1, h2, h3, h4, strong, [class*="font-bold"]');
-  if (titleEl) {
-    const ht = getElementCleanText(titleEl);
-    if (ht.length <= 15 && !ht.includes('AM') && !ht.includes('202')) {
-      courseCode = ht;
+  // Check modal header or title element directly
+  const headerEl = dialog.querySelector('h1, h2, h3, h4, [class*="title"], [class*="header"]');
+  if (headerEl) {
+    const hText = (headerEl.textContent || '').trim();
+    if (hText && hText.length <= 25 && !hText.includes('AM') && !hText.includes('PM') && !hText.includes(':')) {
+      courseCode = hText;
     }
   }
 
-  // Date (e.g. "Friday, September 11, 2026")
   let date = '';
-  const dateMatch = text.match(/([A-Z][a-z]+),\s+([A-Z][a-z]+)\s+(\d{1,2}),\s+(\d{4})/);
-  if (dateMatch) {
-    const MONTHS = [
-      'January', 'February', 'March', 'April', 'May', 'June',
-      'July', 'August', 'September', 'October', 'November', 'December'
-    ];
-    const mIdx = MONTHS.indexOf(dateMatch[2]) + 1;
-    const day = parseInt(dateMatch[3], 10);
-    const year = parseInt(dateMatch[4], 10);
-    if (mIdx > 0) {
-      date = formatISODate(year, mIdx, day);
-    }
-  }
-
-  // Time (e.g. "9:00 AM – 12:00 PM")
   let startTime = '';
   let endTime = '';
-  const timeMatch = text.match(/(\d{1,2}[:.]\d{2}\s*(?:am|pm)?)\s*[–—~-]\s*(\d{1,2}[:.]\d{2}\s*(?:am|pm)?)/i);
-  if (timeMatch) {
-    startTime = normalizeTimeString(timeMatch[1]);
-    endTime = normalizeTimeString(timeMatch[2]);
-  }
-
-  // Lecturer (e.g. "Mr Sankha Jayawardana", "Ms W M A D Weerathunga")
   let lecturer = '';
-  const pEls = Array.from(dialog.querySelectorAll('p, div, span'));
-  for (const pel of pEls) {
-    if (pel.children.length > 2) continue;
-    const pt = getElementCleanText(pel);
-    const m = pt.match(/\b((?:Dr|Prof|Mr|Ms|Mrs)\.?\s+(?:[A-Z]\.?\s+)*[A-Za-z]+(?:\s+[A-Za-z]+){1,3})\b/);
-    if (m && !pt.includes('Hall')) {
-      lecturer = m[1].trim();
-      break;
-    }
-  }
-
-  // Room (e.g. "Lecture Hall 18 - 1st Fl")
   let room = '';
-  for (const pel of pEls) {
-    if (pel.children.length > 2) continue;
-    const pt = getElementCleanText(pel);
-    if (/^(?:Lecture\s+Hall|Hall|Lab|Room|LH|Audi|Auditorium)\b/i.test(pt)) {
-      room = pt;
-      break;
-    }
-  }
-  if (!room) {
-    const roomMatch = text.match(
-      /\b((?:Lecture\s+Hall|Hall|Lab|Room|LH|Audi|Auditorium)[-\s]?[A-Za-z0-9]+(?:\s*-\s*[A-Za-z0-9\s]+)?)\b/i
+  let type = '';
+
+  const MONTHS = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
+  ];
+
+  const isStatusBadge = (s: string) => /^(?:APPROVED|PENDING|CANCELLED|RESCHEDULED|COMPLETED)$/i.test(s.trim());
+
+  const isTypeBadge = (s: string) => {
+    const up = s.toUpperCase().replace(/_/g, ' ');
+    return (
+      up.includes('LECTURE PHYSICAL') ||
+      up.includes('LECTURE ONLINE') ||
+      up.includes('TUTORIAL') ||
+      up.includes('PRACTICAL') ||
+      up.includes('WORKSHOP') ||
+      up.includes('SEMINAR') ||
+      up.includes('EXAM') ||
+      up.includes('VIVA') ||
+      ['LP', 'LO', 'TU', 'LB', 'SM', 'WS', 'EX', 'VV', 'PR', 'CW', 'PC'].includes(up)
     );
-    if (roomMatch) {
-      room = roomMatch[1].trim();
+  };
+
+  // 2. Parse from distinct leaf text tokens
+  for (const text of leafTexts) {
+    // A. Check Date (e.g. "Tuesday, September 1, 2026")
+    const dateMatch = text.match(/([A-Z][a-z]+),\s+([A-Z][a-z]+)\s+(\d{1,2}),\s+(\d{4})/);
+    if (dateMatch && !date) {
+      const mIdx = MONTHS.indexOf(dateMatch[2]) + 1;
+      const day = parseInt(dateMatch[3], 10);
+      const year = parseInt(dateMatch[4], 10);
+      if (mIdx > 0) {
+        date = formatISODate(year, mIdx, day);
+      }
+      continue;
+    }
+
+    // B. Check Time Range (e.g. "9:00 AM – 12:00 PM" or "1:00 PM – 4:00 PM")
+    const timeMatch = text.match(/(\d{1,2}[:.]\d{2}\s*(?:am|pm)?)\s*[–—~-]\s*(\d{1,2}[:.]\d{2}\s*(?:am|pm)?)/i);
+    if (timeMatch && !startTime) {
+      startTime = normalizeTimeString(timeMatch[1]);
+      endTime = normalizeTimeString(timeMatch[2]);
+      continue;
+    }
+
+    // C. Check Room (e.g. "Lecture Hall 18 - 1st Fl", "Lecture Hall 18 - 1st H", "Hall 4A", "Lab 2", "Online")
+    if (
+      /^(?:Lecture\s+Hall|Hall|Lab|Room|LH|Audi|Auditorium)\b/i.test(text) ||
+      /\b(?:Lecture\s+Hall|Hall\s+\d+|Lab\s+\d+|Room\s+\d+|1st\s+Fl|2nd\s+Fl|Floor|1st\s+H)\b/i.test(text) ||
+      /^[A-Za-z0-9\s-]+\s+(?:Hall|Lab|Room|Auditorium|Fl|Floor|H)\b/i.test(text)
+    ) {
+      if (!room) {
+        room = text.replace(/\b(?:LECTURE\s+(?:PHYSICAL|ONLINE)|APPROVED|PENDING|TUTORIAL|LAB)\b.*/i, '').trim();
+        continue;
+      }
+    }
+
+    // D. Check Type Badges (e.g. "LECTURE PHYSICAL" or "LECTURE_PHYSICAL" -> "LP")
+    if (isTypeBadge(text)) {
+      const up = text.toUpperCase().replace(/_/g, ' ');
+      if (up.includes('LECTURE ONLINE') || up === 'LO') {
+        type = 'LO';
+      } else if (up.includes('TUTORIAL') || up === 'TU') {
+        type = 'TU';
+      } else if (up.includes('LAB') || up === 'LB') {
+        type = 'LB';
+      } else if (up.includes('PRACTICAL') || up === 'PC') {
+        type = 'PC';
+      } else if (up.includes('EXAM') || up === 'EX') {
+        type = 'EX';
+      } else if (up.includes('VIVA') || up === 'VV') {
+        type = 'VV';
+      } else {
+        type = 'LP';
+      }
+      continue;
+    }
+
+    // E. Ignore Status Badges
+    if (isStatusBadge(text)) {
+      continue;
+    }
+
+    // F. Course Code / Title (first short token <= 15 chars that isn't date/time/room/status)
+    if (!courseCode && text.length <= 15 && !dateMatch && !timeMatch) {
+      courseCode = text;
+      continue;
+    }
+
+    if (courseCode && text === courseCode) {
+      continue;
+    }
+
+    // G. Lecturer: Any name token with honorific or standard multi-word person name pattern
+    if (!lecturer && text !== courseCode) {
+      if (
+        /^(?:Dr|Prof|Mr|Ms|Mrs|Miss|Eng|Rev)\.?\s+/i.test(text) ||
+        (/^[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+$/.test(text) && !/^(?:Lecture\s+Hall|Room|Hall|Lab)/i.test(text))
+      ) {
+        lecturer = text;
+        continue;
+      }
     }
   }
 
-  // Type (e.g. "LECTURE_PHYSICAL" -> "LP")
-  let type = '';
-  const upper = text.toUpperCase();
-  if (upper.includes('LECTURE_PHYSICAL') || upper.includes('LECTURE PHYSICAL') || upper.includes('LP')) {
-    type = 'LP';
-  } else if (upper.includes('LECTURE_ONLINE') || upper.includes('LECTURE ONLINE') || upper.includes('LO')) {
-    type = 'LO';
-  } else if (upper.includes('TUTORIAL') || upper.includes('TU')) {
-    type = 'TU';
-  } else if (upper.includes('LAB') || upper.includes('LB')) {
-    type = 'LB';
+  // 3. Fallback: Icon-based row search if Room or Lecturer is still missing
+  if (!room) {
+    const pinIcons = Array.from(dialog.querySelectorAll('svg')).filter((svg) => {
+      const p = (svg.innerHTML || '').toLowerCase();
+      const c = (svg.className || '').toString().toLowerCase();
+      return c.includes('map') || c.includes('pin') || p.includes('m21 10c0') || p.includes('circle cx="12" cy="10"');
+    });
+    for (const svg of pinIcons) {
+      const row = svg.closest('div, p, li');
+      if (row) {
+        const rowText = (row.textContent || '').replace(/\s+/g, ' ').trim();
+        if (rowText && rowText !== lecturer && rowText !== courseCode) {
+          room = rowText.replace(/\b(?:LECTURE\s+(?:PHYSICAL|ONLINE)|APPROVED|PENDING|TUTORIAL|LAB)\b.*/i, '').trim();
+          break;
+        }
+      }
+    }
+  }
+
+  if (!lecturer) {
+    const userIcons = Array.from(dialog.querySelectorAll('svg')).filter((svg) => {
+      const p = (svg.innerHTML || '').toLowerCase();
+      const c = (svg.className || '').toString().toLowerCase();
+      return c.includes('user') || c.includes('person') || p.includes('m19 21v-2a4') || p.includes('circle cx="12" cy="7"');
+    });
+    for (const svg of userIcons) {
+      const row = svg.closest('div, p, li');
+      if (row) {
+        const rowText = (row.textContent || '').replace(/\s+/g, ' ').trim();
+        if (rowText && rowText !== room && rowText !== courseCode) {
+          lecturer = rowText;
+          break;
+        }
+      }
+    }
+  }
+
+  // 4. Fallback: regex search on fullText if still empty
+  if (!date) {
+    const dm = fullText.match(/([A-Z][a-z]+),\s+([A-Z][a-z]+)\s+(\d{1,2}),\s+(\d{4})/);
+    if (dm) {
+      const mIdx = MONTHS.indexOf(dm[2]) + 1;
+      const day = parseInt(dm[3], 10);
+      const year = parseInt(dm[4], 10);
+      if (mIdx > 0) date = formatISODate(year, mIdx, day);
+    }
+  }
+
+  if (!startTime) {
+    const tm = fullText.match(/(\d{1,2}[:.]\d{2}\s*(?:am|pm)?)\s*[–—~-]\s*(\d{1,2}[:.]\d{2}\s*(?:am|pm)?)/i);
+    if (tm) {
+      startTime = normalizeTimeString(tm[1]);
+      endTime = normalizeTimeString(tm[2]);
+    }
+  }
+
+  if (!room) {
+    const rm = fullText.match(
+      /\b((?:Lecture\s+Hall|Hall|Lab|Room|LH|Audi|Auditorium)\s+[A-Za-z0-9]+(?:\s*-\s*[A-Za-z0-9]+(?:\s+Fl|\s+Floor)?)?)\b/i
+    );
+    if (rm) {
+      room = rm[1].trim();
+    }
+  }
+
+  if (!lecturer) {
+    const lm = fullText.match(
+      /\b((?:Dr|Prof|Mr|Ms|Mrs|Miss|Eng|Rev)\.?\s+(?:[A-Za-z]\.?\s*)*[A-Za-z]+(?:\s+[A-Za-z]+)*)\b/i
+    );
+    if (lm && !lm[1].includes('Hall') && !lm[1].includes('Room')) {
+      lecturer = lm[1].trim();
+    }
+  }
+
+  if (!type) {
+    const up = fullText.toUpperCase().replace(/_/g, ' ');
+    if (up.includes('LECTURE ONLINE') || up.includes('LO')) {
+      type = 'LO';
+    } else if (up.includes('TUTORIAL') || up.includes('TU')) {
+      type = 'TU';
+    } else if (up.includes('PRACTICAL') || up.includes('PC')) {
+      type = 'PC';
+    } else if (up.includes('LAB') || up.includes('LB')) {
+      type = 'LB';
+    } else if (up.includes('EXAM') || up.includes('EX')) {
+      type = 'EX';
+    } else if (up.includes('VIVA') || up.includes('VV')) {
+      type = 'VV';
+    } else {
+      type = 'LP';
+    }
   }
 
   const { mode, typeLabel } = resolveTypeInfo(type);
-
   const fallbackDate = context ? formatISODate(context.year, context.month, 1) : '';
 
   return {
-    date: date || fallbackDate,
+    date: date || '',
     startTime,
     endTime,
     courseCode,

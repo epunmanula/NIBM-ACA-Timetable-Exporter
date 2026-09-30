@@ -31,6 +31,75 @@ const MONTH_NAMES = [
 ];
 
 /**
+ * Resolves current calendar heading text (e.g. "September 2026", "December 2026").
+ */
+export function getCalendarHeading(doc: Document = document): string {
+  const headings = doc.querySelectorAll(
+    'h1, h2, h3, h4, [class*="title"], [class*="heading"], header span, span, div, p'
+  );
+
+  for (const el of Array.from(headings)) {
+    if (el.children.length > 2) continue;
+    const txt = (el.textContent || '').trim();
+    for (const m of MONTH_NAMES) {
+      const match = txt.match(new RegExp(`\\b(${m}\\s+20\\d\\d)\\b`, 'i'));
+      if (match) {
+        return match[1];
+      }
+    }
+  }
+
+  // Fallback: search body text
+  const bodyText = doc.body?.textContent || '';
+  for (const m of MONTH_NAMES) {
+    const match = bodyText.match(new RegExp(`\\b(${m}\\s+20\\d\\d)\\b`, 'i'));
+    if (match) {
+      return match[1];
+    }
+  }
+
+  return '';
+}
+
+/**
+ * Extracts month (1-12) and year from calendar heading text (e.g. "December 2026").
+ */
+export function parseHeadingMonthYear(headingText: string): { year: number; month: number } | null {
+  for (let i = 0; i < MONTH_NAMES.length; i++) {
+    const m = MONTH_NAMES[i];
+    const match = headingText.match(new RegExp(`\\b${m}\\s+(20\\d\\d)\\b`, 'i'));
+    if (match) {
+      return {
+        year: parseInt(match[1], 10),
+        month: i + 1,
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Checks if a cell element has indicators of being outside current month.
+ */
+export function isCellOutsideMonth(el: Element): boolean {
+  const check = `${el.className || ''} ${el.getAttribute('data-state') || ''}`.toLowerCase();
+  const outsideKeywords = [
+    'outside',
+    'other-month',
+    'prev-month',
+    'next-month',
+    'muted',
+    'opacity-40',
+    'opacity-50',
+    'text-gray-300',
+    'text-gray-400',
+    'day-outside',
+    'disabled',
+  ];
+  return outsideKeywords.some((kw) => check.includes(kw));
+}
+
+/**
  * Extracts context (view, year, month, batch, period) from URL and visible DOM.
  */
 export function extractPageContext(doc: Document = document, currentUrl: string = window.location.href): CalendarContext {
@@ -95,45 +164,32 @@ export function extractPageContext(doc: Document = document, currentUrl: string 
 
   // Year & Month Detection
   let year = parseInt(params.get('year') || '', 10);
-  let month = parseInt(params.get('month') || '', 10); // Check if 0-based or 1-based
+  let month = parseInt(params.get('month') || '', 10);
 
-  // Look for visible month/year heading (e.g. "September 2026" or "2026 September")
-  let periodLabel = '';
-  const headingElements = doc.querySelectorAll(
-    'h1, h2, h3, h4, [class*="title"], [class*="heading"], [class*="calendar-header"], [data-testid*="calendar-header"]'
-  );
-
-  for (const el of Array.from(headingElements)) {
-    const txt = (el.textContent || '').trim();
-    for (let mIndex = 0; mIndex < MONTH_NAMES.length; mIndex++) {
-      const mName = MONTH_NAMES[mIndex];
-      if (txt.includes(mName)) {
-        const yMatch = txt.match(/\b(20\d\d)\b/);
-        if (yMatch) {
-          year = parseInt(yMatch[1], 10);
-          month = mIndex + 1; // 1-indexed for standard representations
-          periodLabel = `${mName} ${year}`;
-          break;
-        }
-      }
+  // Look for visible month/year heading (e.g. "December 2026")
+  let periodLabel = getCalendarHeading(doc);
+  if (periodLabel) {
+    const parsed = parseHeadingMonthYear(periodLabel);
+    if (parsed) {
+      year = parsed.year;
+      month = parsed.month;
     }
-    if (periodLabel) break;
   }
 
   // If month header not found, fall back to URL or current date
   const now = new Date();
   if (!year || isNaN(year)) year = now.getFullYear();
+
+  if (params.has('month')) {
+    // ACA / Next.js URL query parameter month is 0-indexed (0 = Jan, 11 = Dec)
+    const rawM = parseInt(params.get('month') || '', 10);
+    if (!isNaN(rawM) && !periodLabel) {
+      month = rawM >= 0 && rawM <= 11 ? rawM + 1 : rawM;
+    }
+  }
+
   if (!month || isNaN(month)) {
     month = now.getMonth() + 1;
-  } else if (month <= 11 && params.has('month')) {
-    // In many Next.js calendar query params: month=8 means 8 (if 0-indexed = Sept) or August.
-    // If URL has month=8 and heading says September, month was 8 (0-indexed).
-    // If no heading was found, assume URL month could be 0-11 if <= 11 and user navigated.
-    if (!periodLabel) {
-      // Default to 1-indexed unless 0 is present
-      const mVal = month;
-      month = mVal >= 1 && mVal <= 12 ? mVal : (mVal + 1);
-    }
   }
 
   if (!periodLabel) {
@@ -214,6 +270,65 @@ export function getElementCleanText(el: Element): string {
   });
 
   return (clone.textContent || '').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Resolves the calendar date (YYYY-MM-DD) for a specific card element by inspecting
+ * attributes, parent cell structure, and nearby numeric day indicators.
+ */
+export function findDateForCard(cardEl: Element, activeContext: CalendarContext): string {
+  // 1. Direct or ancestor data-date / data-day attribute
+  let curr: Element | null = cardEl;
+  for (let depth = 0; depth < 8 && curr; depth++) {
+    if (curr === curr.ownerDocument?.body || curr.tagName === 'MAIN') break;
+    const dt = curr.getAttribute('data-date') || curr.getAttribute('data-day');
+    if (dt && /^\d{4}-\d{2}-\d{2}$/.test(dt)) {
+      return dt;
+    }
+    curr = curr.parentElement;
+  }
+
+  // 2. Search ancestor cell for calendar day number
+  curr = cardEl.parentElement;
+  for (let depth = 0; depth < 8 && curr; depth++) {
+    if (curr === curr.ownerDocument?.body || curr.tagName === 'MAIN') break;
+
+    // Find leaf descendant elements inside curr that are NOT inside cardEl
+    const allDesc = Array.from(curr.querySelectorAll('*'));
+    for (const desc of allDesc) {
+      if (desc === cardEl || cardEl.contains(desc)) continue;
+      if (desc.children.length > 0) continue;
+      const text = getElementCleanText(desc);
+
+      // Exact day number 1 to 31
+      if (/^([1-9]|[12]\d|3[01])$/.test(text)) {
+        const dayNum = parseInt(text, 10);
+        const isOutside = isCellOutsideMonth(curr);
+        return resolveCellDate(dayNum, isOutside, 15, activeContext);
+      }
+
+      // Day number with day name e.g. "Mon 7" or "Tue 8"
+      const dayMatch = text.match(/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[,\s]+([1-9]|[12]\d|3[01])$/i);
+      if (dayMatch) {
+        const dayNum = parseInt(dayMatch[1], 10);
+        const isOutside = isCellOutsideMonth(curr);
+        return resolveCellDate(dayNum, isOutside, 15, activeContext);
+      }
+    }
+
+    // Check if curr text starts with day number e.g. "7 LP OS"
+    const currText = getElementCleanText(curr);
+    const startMatch = currText.match(/^([1-9]|[12]\d|3[01])\b/);
+    if (startMatch) {
+      const dayNum = parseInt(startMatch[1], 10);
+      const isOutside = isCellOutsideMonth(curr);
+      return resolveCellDate(dayNum, isOutside, 15, activeContext);
+    }
+
+    curr = curr.parentElement;
+  }
+
+  return '';
 }
 
 /**
@@ -298,15 +413,21 @@ export function parseEventCard(
       if (hyphenMatch) {
         courseCode = hyphenMatch[1].replace(/\s+/g, ' ');
       } else {
-        const words = rawText.split(/[\s,–—~-]+/).map((w) => w.trim().toUpperCase());
-        const IGNORE_WORDS = new Set([
-          'LP', 'LO', 'TU', 'LB', 'SM', 'WS', 'EX', 'VV', 'PR', 'CW', 'PC',
-          'AM', 'PM', 'HALL', 'LAB', 'ROOM', 'ONLINE', 'ZOOM', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'
-        ]);
-        for (const w of words) {
-          if (/^[A-Z]{2,6}$/.test(w) && !IGNORE_WORDS.has(w) && w !== eventType) {
-            courseCode = w;
-            break;
+        // 3. Try ampersand codes: e.g. "DL & CO"
+        const ampersandMatch = rawText.match(/\b([A-Za-z0-9]{2,5}\s*&\s*[A-Za-z0-9]{2,5})\b/i);
+        if (ampersandMatch) {
+          courseCode = ampersandMatch[1].toUpperCase();
+        } else {
+          const words = rawText.split(/[\s,–—~-]+/).map((w) => w.trim().toUpperCase());
+          const IGNORE_WORDS = new Set([
+            'LP', 'LO', 'TU', 'LB', 'SM', 'WS', 'EX', 'VV', 'PR', 'CW', 'PC',
+            'AM', 'PM', 'HALL', 'LAB', 'ROOM', 'ONLINE', 'ZOOM', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'
+          ]);
+          for (const w of words) {
+            if (/^[A-Z]{2,6}$/.test(w) && !IGNORE_WORDS.has(w) && w !== eventType) {
+              courseCode = w;
+              break;
+            }
           }
         }
       }

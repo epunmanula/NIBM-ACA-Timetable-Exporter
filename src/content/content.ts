@@ -14,10 +14,15 @@ import {
   TimetableEvent,
 } from '../types/timetable';
 import { setupApiInterceptor } from './api-interceptor';
-import { getElementCleanText } from './calendar-parser';
+import {
+  getCalendarHeading,
+  getElementCleanText,
+  parseHeadingMonthYear,
+} from './calendar-parser';
 import { scrapeActiveModal, scrapeTimetableFromDOM } from './dom-scraper';
-import { computeSummary, deduplicateEvents, mergeModalIntoEvents } from './normalizer';
+import { computeMultiMonthPeriodLabel, computeSummary, deduplicateEvents, mergeModalIntoEvents } from './normalizer';
 import { loadScraperState, saveScraperState } from '../storage/storage';
+import { enrichAllCardsSequentially, scanAllMonthsSequentially } from './card-enricher';
 
 let currentState: ScraperState = {
   context: {
@@ -103,11 +108,11 @@ async function runExtraction(force = false): Promise<ScraperState> {
     // safe fallback
   }
 
-  // Combine DOM and API events
+  // Combine newly found DOM events with existing accumulated events and API events
   const combined = [
+    ...currentState.events,
     ...domResult.events,
     ...apiEvents,
-    ...currentState.events.filter((e) => e.source === 'api'),
   ];
   const { uniqueEvents, duplicatesRemoved } = deduplicateEvents(combined);
   const strategy = apiEvents.length > 0 || currentState.events.some((e) => e.source === 'api')
@@ -116,11 +121,15 @@ async function runExtraction(force = false): Promise<ScraperState> {
       : 'api'
     : 'dom';
 
+  const multiPeriod = computeMultiMonthPeriodLabel(uniqueEvents, domResult.context.periodLabel);
   const summary = computeSummary(uniqueEvents, duplicatesRemoved, strategy);
 
   currentState = {
     ...currentState,
-    context: domResult.context,
+    context: {
+      ...domResult.context,
+      periodLabel: multiPeriod,
+    },
     events: uniqueEvents,
     summary,
   };
@@ -229,52 +238,59 @@ function setupHistoryListeners() {
 }
 
 /**
- * Programmatically triggers modals for all visible cards to enrich lecturer, room, and time.
+ * Programmatically triggers modals for all visible cards sequentially to enrich lecturer, room, and time.
  */
 async function autoEnrichFromModals(): Promise<ScraperState> {
-  const TYPE_PREFIXES = 'LP|LO|TU|LB|SM|WS|EX|VV|PR|CW|PC';
-  const badgeRegex = new RegExp(`(?:^|\\b)(${TYPE_PREFIXES})(?:\\b|\\s*[-:]?\\s*)([A-Za-z0-9\\s/-]{1,15})`, 'i');
-
-  const candidates = Array.from(document.querySelectorAll('div, button, a')).filter((el) => {
-    if (el.closest('footer, header, nav, [role="dialog"]')) return false;
-    if (el.children.length > 2) return false;
-    const txt = getElementCleanText(el);
-    return txt.length >= 3 && txt.length <= 35 && badgeRegex.test(txt);
-  });
-
-  const badges = candidates.filter((el) => !Array.from(el.children).some((c) => candidates.includes(c)));
-
-  for (let i = 0; i < badges.length; i++) {
-    const badge = badges[i] as HTMLElement;
-    if (typeof badge.click !== 'function') continue;
-
-    // Trigger click on badge
-    badge.click();
-    await new Promise((r) => setTimeout(r, 70));
-
-    // Scrape active modal
-    const modalData = scrapeActiveModal(document, currentState.context);
-    if (modalData && modalData.date) {
-      mergeModalIntoEvents(currentState.events, modalData);
-    }
-
-    // Close modal
-    const closeBtn = document.querySelector(
-      '[role="dialog"] button, [class*="modal"] button, [class*="close"], [aria-label*="close"]'
-    ) as HTMLElement;
-    if (closeBtn && typeof closeBtn.click === 'function') {
-      closeBtn.click();
-    } else {
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
-    }
-    await new Promise((r) => setTimeout(r, 40));
+  if (currentState.debugMode) {
+    console.log('[NIBM Exporter] Starting automated card crawling & modal enrichment...');
   }
 
-  // Deduplicate and re-compute summary
-  const { uniqueEvents, duplicatesRemoved } = deduplicateEvents(currentState.events);
-  currentState.events = uniqueEvents;
-  currentState.summary = computeSummary(uniqueEvents, duplicatesRemoved, 'dom');
-  saveScraperState(currentState);
+  const activeHeading = getCalendarHeading(document);
+  const parsedHM = activeHeading ? parseHeadingMonthYear(activeHeading) : null;
+  const activeContext: CalendarContext = {
+    ...currentState.context,
+    year: parsedHM?.year || currentState.context.year,
+    month: parsedHM?.month || currentState.context.month,
+    periodLabel: activeHeading || currentState.context.periodLabel,
+  };
+
+  const enrichedEvents = await enrichAllCardsSequentially(
+    document,
+    activeContext,
+    (progress) => {
+      // Send live progress update to popup
+      try {
+        chrome.runtime.sendMessage({
+          action: 'ENRICH_PROGRESS',
+          payload: progress,
+        }).catch(() => {});
+      } catch {
+        // safe ignore if popup is closed
+      }
+    }
+  );
+
+  if (enrichedEvents.length > 0) {
+    // Accumulate newly crawled rich events with all existing events
+    const combined = [
+      ...currentState.events,
+      ...enrichedEvents,
+    ];
+
+    const { uniqueEvents, duplicatesRemoved } = deduplicateEvents(combined);
+    const multiPeriod = computeMultiMonthPeriodLabel(uniqueEvents, currentState.context.periodLabel);
+    currentState = {
+      ...currentState,
+      context: {
+        ...currentState.context,
+        periodLabel: multiPeriod,
+      },
+      events: uniqueEvents,
+      summary: computeSummary(uniqueEvents, duplicatesRemoved, 'dom'),
+    };
+
+    saveScraperState(currentState);
+  }
 
   return currentState;
 }
@@ -297,8 +313,15 @@ function setupMessageListener() {
 
         case 'SCAN_PAGE': {
           runExtraction(true)
-            .then((result) => {
-              sendResponse(result);
+            .then(async (result) => {
+              // Automatically enrich if cards lack lecturer, room, or times
+              const needsEnrichment = result.events.length > 0 && result.events.some((e) => !e.lecturer || !e.room || !e.startTime);
+              if (needsEnrichment) {
+                const enriched = await autoEnrichFromModals();
+                sendResponse(enriched);
+              } else {
+                sendResponse(result);
+              }
             })
             .catch((err) => {
               sendResponse({ error: String(err) });
@@ -314,6 +337,78 @@ function setupMessageListener() {
             .catch((err) => {
               sendResponse({ error: String(err) });
             });
+          break;
+        }
+
+        case 'SCAN_ALL_MONTHS': {
+          const activeHeading = getCalendarHeading(document);
+          const parsedHM = activeHeading ? parseHeadingMonthYear(activeHeading) : null;
+          const activeContext: CalendarContext = {
+            ...currentState.context,
+            year: parsedHM?.year || currentState.context.year,
+            month: parsedHM?.month || currentState.context.month,
+            periodLabel: activeHeading || currentState.context.periodLabel,
+          };
+
+          scanAllMonthsSequentially(document, activeContext, 6, (progress) => {
+            try {
+              chrome.runtime.sendMessage({
+                action: 'ENRICH_PROGRESS',
+                payload: progress,
+              }).catch(() => {});
+            } catch {
+              // safe ignore
+            }
+          })
+            .then((scannedEvents) => {
+              const combined = [...currentState.events, ...scannedEvents];
+              const { uniqueEvents, duplicatesRemoved } = deduplicateEvents(combined);
+              const multiPeriod = computeMultiMonthPeriodLabel(
+                uniqueEvents,
+                currentState.context.periodLabel
+              );
+              currentState = {
+                ...currentState,
+                context: {
+                  ...currentState.context,
+                  periodLabel: multiPeriod,
+                },
+                events: uniqueEvents,
+                summary: computeSummary(uniqueEvents, duplicatesRemoved, 'dom'),
+              };
+              saveScraperState(currentState);
+              sendResponse(currentState);
+            })
+            .catch((err) => {
+              sendResponse({ error: String(err) });
+            });
+          break;
+        }
+
+        case 'CLEAR_DATA': {
+          currentState = {
+            ...currentState,
+            events: [],
+            summary: {
+              totalFound: 0,
+              uniqueCount: 0,
+              duplicatesRemoved: 0,
+              missingFieldsCount: 0,
+              missingFieldsBreakdown: {
+                startTime: 0,
+                endTime: 0,
+                type: 0,
+                courseCode: 0,
+                courseName: 0,
+                lecturer: 0,
+                room: 0,
+              },
+              strategyUsed: 'none',
+              lastScannedAt: '',
+            },
+          };
+          saveScraperState(currentState);
+          sendResponse(currentState);
           break;
         }
 
@@ -346,21 +441,53 @@ function setupMessageListener() {
   document.addEventListener(
     'click',
     () => {
-      setTimeout(() => {
-        const modal = scrapeActiveModal(document, currentState.context);
-        if (modal && modal.date && modal.courseCode) {
-          const updated = mergeModalIntoEvents(currentState.events, modal);
-          if (updated) {
-            const { uniqueEvents, duplicatesRemoved } = deduplicateEvents(currentState.events);
-            currentState.events = uniqueEvents;
-            currentState.summary = computeSummary(uniqueEvents, duplicatesRemoved, 'dom');
-            saveScraperState(currentState);
+      [100, 250, 450].forEach((delay) => {
+        setTimeout(() => {
+          const modal = scrapeActiveModal(document, currentState.context);
+          if (modal && modal.date && modal.courseCode && (modal.lecturer || modal.room || modal.startTime)) {
+            const updated = mergeModalIntoEvents(currentState.events, modal);
+            if (updated) {
+              const { uniqueEvents, duplicatesRemoved } = deduplicateEvents(currentState.events);
+              currentState.events = uniqueEvents;
+              currentState.summary = computeSummary(uniqueEvents, duplicatesRemoved, 'dom');
+              saveScraperState(currentState);
+            }
           }
-        }
-      }, 150);
+        }, delay);
+      });
     },
     true
   );
+
+  // MutationObserver on document.body for instant modal detection
+  try {
+    const modalObserver = new MutationObserver(() => {
+      const dialog = document.querySelector(
+        '[role="dialog"], [class*="modal"], [class*="popup"], div[class*="fixed"][class*="z-"]'
+      );
+      if (dialog) {
+        setTimeout(() => {
+          const modal = scrapeActiveModal(document, currentState.context);
+          if (modal && modal.date && modal.courseCode && (modal.lecturer || modal.room || modal.startTime)) {
+            const updated = mergeModalIntoEvents(currentState.events, modal);
+            if (updated) {
+              const { uniqueEvents, duplicatesRemoved } = deduplicateEvents(currentState.events);
+              currentState.events = uniqueEvents;
+              currentState.summary = computeSummary(uniqueEvents, duplicatesRemoved, 'dom');
+              saveScraperState(currentState);
+            }
+          }
+        }, 80);
+      }
+    });
+
+    modalObserver.observe(document.body || document.documentElement, {
+      childList: true,
+      subtree: true,
+    });
+  } catch {
+    // safe fallback
+  }
 }
 
 /**

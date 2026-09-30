@@ -101,6 +101,9 @@ export const KNOWN_TYPES: Record<string, KnownTypeInfo> = {
 export type MessageAction =
   | 'PING'
   | 'SCAN_PAGE'
+  | 'SCAN_ALL_MONTHS'
+  | 'ENRICH_DETAILS'
+  | 'ENRICH_PROGRESS'
   | 'GET_STATE'
   | 'STATE_UPDATE'
   | 'API_DATA_CAPTURED'

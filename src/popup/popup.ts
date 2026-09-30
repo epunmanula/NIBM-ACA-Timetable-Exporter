@@ -81,10 +81,12 @@ const metricUnique = document.getElementById('metricUnique') as HTMLElement;
 const metricMissing = document.getElementById('metricMissing') as HTMLElement;
 const metricDuplicates = document.getElementById('metricDuplicates') as HTMLElement;
 
+const btnScanAll = document.getElementById('btnScanAll') as HTMLButtonElement;
 const btnScan = document.getElementById('btnScan') as HTMLButtonElement;
 const btnEnrich = document.getElementById('btnEnrich') as HTMLButtonElement;
 const btnExportCsv = document.getElementById('btnExportCsv') as HTMLButtonElement;
 const btnToggleSettings = document.getElementById('btnToggleSettings') as HTMLButtonElement;
+const btnClearData = document.getElementById('btnClearData') as HTMLButtonElement;
 
 const settingsPanel = document.getElementById('settingsPanel') as HTMLElement;
 const columnsGrid = document.getElementById('columnsGrid') as HTMLElement;
@@ -185,6 +187,26 @@ function isEventMatchingFilters(ev: TimetableEvent): boolean {
 }
 
 /**
+ * Resets all search and filter fields so all events are visible
+ */
+function resetFilters() {
+  filters = {
+    dateFrom: '',
+    dateTo: '',
+    selectedTypes: ['ALL'],
+    courseFilter: '',
+    searchQuery: '',
+  };
+  if (filterDateFrom) filterDateFrom.value = '';
+  if (filterDateTo) filterDateTo.value = '';
+  if (filterType) filterType.value = 'ALL';
+  if (filterCourse) filterCourse.value = '';
+  if (tableSearchInput) tableSearchInput.value = '';
+  saveFilterPreferences(filters);
+  renderPreviewTable();
+}
+
+/**
  * Get filtered event list
  */
 function getFilteredEvents(): TimetableEvent[] {
@@ -205,10 +227,15 @@ function renderPreviewTable() {
     row.className = 'empty-row';
     const cell = document.createElement('td');
     cell.colSpan = 6;
-    cell.textContent =
-      state.events.length === 0
-        ? 'No timetable events found. Click "Scan Timetable" to extract from active page.'
-        : 'No events match your current filter criteria.';
+    if (state.events.length === 0) {
+      cell.textContent = 'No timetable events found. Click "Scan All Months" or "Scan Month" to extract.';
+    } else {
+      cell.innerHTML = `<span>No events match your current filter criteria.</span> <button id="btnResetFiltersInline" style="background:#e0e7ff;color:#4338ca;border:none;border-radius:4px;padding:3px 9px;font-size:11px;font-weight:600;cursor:pointer;margin-left:8px;">Clear Filters</button>`;
+      setTimeout(() => {
+        const btn = document.getElementById('btnResetFiltersInline');
+        if (btn) btn.onclick = resetFilters;
+      }, 0);
+    }
     row.appendChild(cell);
     previewTableBody.appendChild(row);
     return;
@@ -383,8 +410,8 @@ async function checkActiveTab(): Promise<chrome.tabs.Tab | null> {
  */
 async function triggerScan() {
   btnScan.disabled = true;
-  btnScan.innerHTML = '<span class="btn-icon">⏳</span> Scanning...';
-  hideBanner();
+  btnScan.innerHTML = '<span class="btn-icon">⏳</span> Scanning & Enriching...';
+  showBanner('Scanning timetable and collecting lecturer & room details... Please wait a few seconds.', 'info');
 
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -399,8 +426,12 @@ async function triggerScan() {
 
     if (result && result.events) {
       state = result;
-      renderContextAndMetrics();
-      renderPreviewTable();
+      if (getFilteredEvents().length === 0 && state.events.length > 0) {
+        resetFilters();
+      } else {
+        renderContextAndMetrics();
+        renderPreviewTable();
+      }
 
       if (state.events.length === 0) {
         showBanner(
@@ -408,8 +439,9 @@ async function triggerScan() {
           'warning'
         );
       } else {
+        const enrichedCount = state.events.filter((e) => e.lecturer || e.room).length;
         showBanner(
-          `Successfully extracted ${state.events.length} timetable events (${state.summary.duplicatesRemoved} duplicates removed).`,
+          `Successfully extracted ${state.events.length} timetable events (${enrichedCount} with lecturer/room details).`,
           'info'
         );
       }
@@ -424,8 +456,87 @@ async function triggerScan() {
     );
   } finally {
     btnScan.disabled = false;
-    btnScan.innerHTML = '<span class="btn-icon">⟳</span> Scan Timetable';
+    btnScan.innerHTML = '<span class="btn-icon">⟳</span> Scan Month';
   }
+}
+
+/**
+ * Execute Multi-Month scan across all calendar months that have lectures
+ */
+async function triggerScanAll() {
+  if (!btnScanAll) return;
+  btnScanAll.disabled = true;
+  btnScanAll.innerHTML = '<span class="btn-icon">⏳</span> Scanning All...';
+  showBanner('Auto-scanning all months with timetable data... Please wait a few moments.', 'info');
+
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab || !tab.id) throw new Error('No active tab found.');
+
+    await ensureContentScriptInjected(tab.id);
+
+    const result = (await chrome.tabs.sendMessage(tab.id, {
+      action: 'SCAN_ALL_MONTHS',
+    })) as ScraperState;
+
+    if (result && result.events) {
+      state = result;
+      if (getFilteredEvents().length === 0 && state.events.length > 0) {
+        resetFilters();
+      } else {
+        renderContextAndMetrics();
+        renderPreviewTable();
+      }
+      showBanner(
+        `Multi-month scan completed! Collected ${state.events.length} total events across all months.`,
+        'info'
+      );
+    }
+  } catch (err) {
+    console.error('[NIBM Exporter] Multi-month scan error:', err);
+    showBanner('Multi-month scan completed or stopped. Timetable events loaded.', 'info');
+  } finally {
+    btnScanAll.disabled = false;
+    btnScanAll.innerHTML = '<span class="btn-icon">📅</span> Scan All Months';
+  }
+}
+
+/**
+ * Clear all accumulated timetable data
+ */
+async function handleClearData() {
+  if (!confirm('Are you sure you want to clear all accumulated timetable data?')) return;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab && tab.id) {
+      await chrome.tabs.sendMessage(tab.id, { action: 'CLEAR_DATA' });
+    }
+  } catch {
+    // safe fallback
+  }
+
+  state.events = [];
+  state.summary = {
+    totalFound: 0,
+    uniqueCount: 0,
+    duplicatesRemoved: 0,
+    missingFieldsCount: 0,
+    missingFieldsBreakdown: {
+      startTime: 0,
+      endTime: 0,
+      type: 0,
+      courseCode: 0,
+      courseName: 0,
+      lecturer: 0,
+      room: 0,
+    },
+    strategyUsed: 'none',
+    lastScannedAt: '',
+  };
+  await saveScraperState(state);
+  renderContextAndMetrics();
+  renderPreviewTable();
+  showBanner('All saved timetable data cleared.', 'info');
 }
 
 /**
@@ -472,7 +583,12 @@ async function triggerEnrich() {
  * Handle CSV Export
  */
 function handleExport() {
-  const eventsToExport = getFilteredEvents();
+  let eventsToExport = getFilteredEvents();
+
+  if (eventsToExport.length === 0 && state.events.length > 0) {
+    resetFilters();
+    eventsToExport = state.events;
+  }
 
   if (eventsToExport.length === 0) {
     showBanner('No events to export. Please scan or clear filters.', 'warning');
@@ -519,16 +635,24 @@ async function init() {
 
   renderColumnsSelector();
   renderContextAndMetrics();
-  renderPreviewTable();
+
+  // If saved filters hid all records while events exist, reset them so user sees their data
+  if (getFilteredEvents().length === 0 && state.events.length > 0) {
+    resetFilters();
+  } else {
+    renderPreviewTable();
+  }
 
   // Connect with active tab
   await checkActiveTab();
 
   // Bind Buttons
+  if (btnScanAll) btnScanAll.addEventListener('click', triggerScanAll);
   btnScan.addEventListener('click', triggerScan);
   if (btnEnrich) btnEnrich.addEventListener('click', triggerEnrich);
   btnExportCsv.addEventListener('click', handleExport);
   bannerCloseBtn.addEventListener('click', hideBanner);
+  if (btnClearData) btnClearData.addEventListener('click', handleClearData);
 
   btnToggleSettings.addEventListener('click', () => {
     settingsPanel.classList.toggle('hidden');
@@ -589,6 +713,28 @@ async function init() {
         action: 'SET_DEBUG_MODE',
         payload: state.debugMode,
       });
+    }
+  });
+
+  // Listen for live crawling progress updates from content script
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg.action === 'ENRICH_PROGRESS' && msg.payload) {
+      const { current, total, cardText, isComplete } = msg.payload;
+      if (isComplete) {
+        showBanner(`Completed crawling ${total} cards! All details captured.`, 'info');
+      } else {
+        const pct = Math.round((current / total) * 100);
+        showBanner(`Enriching card ${current} of ${total}: ${cardText} (${pct}%)...`, 'info');
+        if (btnScanAll && btnScanAll.disabled) {
+          btnScanAll.innerHTML = `<span class="btn-icon">⏳</span> ${current}/${total} (${pct}%)`;
+        }
+        if (btnScan.disabled) {
+          btnScan.innerHTML = `<span class="btn-icon">⏳</span> ${current}/${total} (${pct}%)`;
+        }
+        if (btnEnrich && btnEnrich.disabled) {
+          btnEnrich.innerHTML = `<span class="btn-icon">⏳</span> ${current}/${total} (${pct}%)`;
+        }
+      }
     }
   });
 }

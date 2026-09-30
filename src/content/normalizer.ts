@@ -17,7 +17,7 @@ export function resolveTypeInfo(rawType: string): {
   typeLabel: string;
   mode: LectureMode;
 } {
-  const clean = (rawType || '').trim().toUpperCase();
+  const clean = (rawType || '').replace(/_/g, ' ').trim().toUpperCase();
 
   if (!clean) {
     return {
@@ -156,24 +156,58 @@ export function mergeModalIntoEvents(
 ): boolean {
   if (!modal || !modal.date) return false;
 
-  const target = events.find((e) => {
+  const modalCourse = (modal.courseCode || modal.courseName || '').toUpperCase().trim();
+  const modalType = (modal.type || '').toUpperCase().trim();
+
+  // 1. Try to find slot with exact matching time on that date
+  let target = events.find((e) => {
     if (e.date !== modal.date) return false;
-    if (modal.courseCode && e.courseCode && e.courseCode !== modal.courseCode) return false;
-    if (modal.type && e.type && e.type !== modal.type) return false;
-    return true;
+    const eCourse = (e.courseCode || e.courseName || '').toUpperCase().trim();
+    if (modalCourse && eCourse && eCourse !== modalCourse) return false;
+    if (modalType && e.type && e.type.toUpperCase() !== modalType) return false;
+    if (modal.startTime && e.startTime) {
+      return e.startTime === modal.startTime;
+    }
+    return false;
   });
+
+  // 2. If no exact time match, find the first slot on that date that is MISSING time or lecturer
+  if (!target) {
+    target = events.find((e) => {
+      if (e.date !== modal.date) return false;
+      const eCourse = (e.courseCode || e.courseName || '').toUpperCase().trim();
+      if (modalCourse && eCourse && eCourse !== modalCourse) return false;
+      if (modalType && e.type && e.type.toUpperCase() !== modalType) return false;
+      return !e.startTime || !e.lecturer || !e.room;
+    });
+  }
+
+  // 3. Fallback: any slot on that date matching course code
+  if (!target && modalCourse) {
+    target = events.find((e) => {
+      if (e.date !== modal.date) return false;
+      const eCourse = (e.courseCode || e.courseName || '').toUpperCase().trim();
+      return eCourse === modalCourse && (!e.startTime || !e.lecturer || !e.room);
+    });
+  }
 
   if (target) {
     if (modal.startTime) target.startTime = modal.startTime;
     if (modal.endTime) target.endTime = modal.endTime;
     if (modal.lecturer) target.lecturer = modal.lecturer;
     if (modal.room) target.room = modal.room;
+    if (modal.courseCode) target.courseCode = modal.courseCode;
+    if (modal.courseName && !target.courseName) target.courseName = modal.courseName;
     if (modal.type) target.type = modal.type;
     if (modal.typeLabel) target.typeLabel = modal.typeLabel;
     if (modal.mode && modal.mode !== 'Unknown') target.mode = modal.mode;
     return true;
   }
-  return false;
+
+  // 4. If all slots on that date already had different times, add as new event
+  const newEvent = normalizeEvent(modal, events[0]?.batch || '');
+  events.push(newEvent);
+  return true;
 }
 
 /**
@@ -441,4 +475,38 @@ export function computeSummary(
       second: '2-digit',
     }),
   };
+}
+
+/**
+ * Computes a human-readable multi-month period label if events span multiple months.
+ * e.g., "Sep 2026 – Oct 2026 (2 Months)"
+ */
+export function computeMultiMonthPeriodLabel(
+  events: TimetableEvent[],
+  fallback = ''
+): string {
+  const monthsSet = new Set<string>();
+  for (const ev of events) {
+    if (ev.date && /^\d{4}-\d{2}-\d{2}$/.test(ev.date)) {
+      monthsSet.add(ev.date.slice(0, 7)); // "YYYY-MM"
+    }
+  }
+
+  const sortedMonths = Array.from(monthsSet).sort();
+  if (sortedMonths.length === 0) return fallback;
+  if (sortedMonths.length === 1) {
+    const [y, m] = sortedMonths[0].split('-').map(Number);
+    const d = new Date(y, m - 1, 1);
+    return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  }
+
+  const [y1, m1] = sortedMonths[0].split('-').map(Number);
+  const [y2, m2] = sortedMonths[sortedMonths.length - 1].split('-').map(Number);
+  const d1 = new Date(y1, m1 - 1, 1);
+  const d2 = new Date(y2, m2 - 1, 1);
+
+  const startStr = d1.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+  const endStr = d2.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+
+  return `${startStr} – ${endStr} (${sortedMonths.length} Months)`;
 }

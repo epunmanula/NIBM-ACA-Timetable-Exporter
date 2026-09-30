@@ -48,11 +48,18 @@ export function generateTimetableCsv(
   // Prepend UTF-8 BOM for Microsoft Excel compatibility
   const BOM = '\uFEFF';
 
+  // Strictly sort events in chronological order: date ascending, then startTime ascending
+  const sortedEvents = [...events].sort((a, b) => {
+    const dateComp = (a.date || '').localeCompare(b.date || '');
+    if (dateComp !== 0) return dateComp;
+    return (a.startTime || '').localeCompare(b.startTime || '');
+  });
+
   // Build Header Row
   const headerRow = activeCols.map((c) => escapeCsvCell(c.label)).join(',');
 
   // Build Data Rows with CRLF (\r\n) line endings
-  const dataRows = events.map((ev) => {
+  const dataRows = sortedEvents.map((ev) => {
     return activeCols
       .map((col) => {
         const val = ev[col.key];
@@ -77,9 +84,18 @@ export function generateCsvFilename(context: CalendarContext, isFiltered = false
     .slice(0, 25)
     .replace(/_+$/g, '');
 
-  const y = context.year || new Date().getFullYear();
-  const m = (context.month || new Date().getMonth() + 1).toString().padStart(2, '0');
-  const period = `${y}-${m}`;
+  let period = '';
+  if (context.periodLabel && (context.periodLabel.includes('–') || context.periodLabel.includes('Months'))) {
+    period = context.periodLabel
+      .replace(/[^a-zA-Z0-9_-]/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 30);
+  } else {
+    const y = context.year || new Date().getFullYear();
+    const m = (context.month || new Date().getMonth() + 1).toString().padStart(2, '0');
+    period = `${y}-${m}`;
+  }
 
   const suffix = isFiltered ? '_Filtered' : '';
   return `NIBM_Timetable_${cleanBatch || 'Batch'}_${period}${suffix}.csv`;

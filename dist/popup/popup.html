@@ -50,11 +50,11 @@
 
     <!-- Primary Actions Toolbar -->
     <section class="action-bar">
-      <button id="btnScan" class="btn btn-primary" title="Scan current timetable view">
-        <span class="btn-icon">⟳</span> Scan Timetable
+      <button id="btnScanAll" class="btn btn-purple" title="Automatically scan all months with timetable data">
+        <span class="btn-icon">📅</span> Scan All Months
       </button>
-      <button id="btnEnrich" class="btn btn-warning" title="Auto-collect lecturers, exact hours & rooms from ACA cards">
-        <span class="btn-icon">⚡</span> Enrich Details
+      <button id="btnScan" class="btn btn-primary" title="Scan current timetable month">
+        <span class="btn-icon">⟳</span> Scan Month
       </button>
       <button id="btnExportCsv" class="btn btn-success" title="Download clean CSV">
         <span class="btn-icon">📥</span> Export CSV
@@ -147,6 +147,13 @@
           <input type="checkbox" id="chkDebugMode">
           <span class="toggle-label">Developer Debug Mode</span>
         </label>
+      </div>
+
+      <!-- Reset / Clear Action -->
+      <div style="margin-top: 12px; display: flex; justify-content: flex-end;">
+        <button id="btnClearData" class="btn-clear-danger" title="Reset all accumulated timetable records">
+          🗑 Clear Scraped Data
+        </button>
       </div>
     </section>
 

@@ -255,4 +255,56 @@ describe('DOM Scraper - ACA Calendar Simulation', () => {
     expect(day2?.type).toBe('LP');
     expect(day2?.courseCode).toBe('APF');
   });
+
+  it('accurately parses active modal with SVG icon rows and Sri Lankan lecturer names', () => {
+    document.body.innerHTML = `
+      <div id="__next">
+        <header><h1>September 2026</h1><button>DSE262FT</button></header>
+        <div class="calendar-grid">
+          <div class="day-cell">
+            <span>18</span>
+            <div class="badge">LP APF</div>
+          </div>
+        </div>
+        <!-- Modal with SVG icon rows as in real ACA -->
+        <div role="dialog" class="fixed z-50">
+          <h3>APF</h3>
+          <div class="flex items-center gap-3">
+            <svg class="lucide-clock"><circle cx="12" cy="12" r="10"></circle></svg>
+            <div>
+              <p>Friday, September 18, 2026</p>
+              <p>1:00 PM – 4:00 PM</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-3">
+            <svg class="lucide-user"><circle cx="12" cy="7" r="4"></circle><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"></path></svg>
+            <p>Ms I R M C J Rajapaksha</p>
+          </div>
+          <div class="flex items-center gap-3">
+            <svg class="lucide-map-pin"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>
+            <p>Lecture Hall 18 - 1st Fl</p>
+          </div>
+          <div class="flex gap-2">
+            <span class="badge">LECTURE PHYSICAL</span>
+            <span class="badge">APPROVED</span>
+          </div>
+        </div>
+      </div>
+    `;
+
+    const result = scrapeTimetableFromDOM(
+      document,
+      'https://aca.mynibm.com/dashboard?view=month&year=2026&month=8&batch=5359921f-9f77-4335-946f-e54cb90fb4bf'
+    );
+
+    const event = result.events.find((e) => e.date === '2026-09-18' && e.courseCode === 'APF');
+    expect(event).toBeDefined();
+    expect(event?.startTime).toBe('13:00');
+    expect(event?.endTime).toBe('16:00');
+    expect(event?.lecturer).toBe('Ms I R M C J Rajapaksha');
+    expect(event?.room).toBe('Lecture Hall 18 - 1st Fl');
+    expect(event?.type).toBe('LP');
+    expect(event?.typeLabel).toBe('Lecture (Physical)');
+    expect(event?.mode).toBe('Physical');
+  });
 });
