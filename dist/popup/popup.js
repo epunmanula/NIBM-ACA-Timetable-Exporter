@@ -45,19 +45,44 @@ function generateCsvFilename(context, isFiltered = false) {
   const suffix = isFiltered ? "_Filtered" : "";
   return `NIBM_Timetable_${cleanBatch || "Batch"}_${period}${suffix}.csv`;
 }
-function downloadCsvLocally(csvContent, filename) {
-  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-  const blobUrl = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = blobUrl;
-  link.setAttribute("download", filename);
-  link.style.display = "none";
-  document.body.appendChild(link);
-  link.click();
-  setTimeout(() => {
-    document.body.removeChild(link);
-    URL.revokeObjectURL(blobUrl);
-  }, 500);
+async function downloadCsvLocally(csvContent, filename) {
+  const cleanFilename = filename.toLowerCase().endsWith(".csv") ? filename : `${filename}.csv`;
+  const dataUrl = "data:text/csv;charset=utf-8," + encodeURIComponent(csvContent);
+  if (typeof chrome !== "undefined" && chrome.downloads && typeof chrome.downloads.download === "function") {
+    try {
+      await new Promise((resolve, reject) => {
+        chrome.downloads.download(
+          {
+            url: dataUrl,
+            filename: cleanFilename,
+            saveAs: false
+          },
+          (downloadId) => {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message));
+            } else {
+              resolve(downloadId);
+            }
+          }
+        );
+      });
+      return;
+    } catch (err) {
+      console.warn("[NIBM Exporter] chrome.downloads.download failed, falling back to anchor:", err);
+    }
+  }
+  if (typeof document !== "undefined") {
+    const link = document.createElement("a");
+    link.href = dataUrl;
+    link.setAttribute("download", cleanFilename);
+    link.download = cleanFilename;
+    link.style.display = "none";
+    (document.body || document.documentElement).appendChild(link);
+    link.click();
+    setTimeout(() => {
+      link.remove();
+    }, 1e3);
+  }
 }
 
 // src/storage/storage.ts
@@ -603,7 +628,7 @@ async function triggerEnrich() {
     btnEnrich.innerHTML = '<span class="btn-icon">\u26A1</span> Enrich Details';
   }
 }
-function handleExport() {
+async function handleExport() {
   let eventsToExport = getFilteredEvents();
   if (eventsToExport.length === 0 && state.events.length > 0) {
     resetFilters();
@@ -621,7 +646,7 @@ function handleExport() {
   const isFiltered = eventsToExport.length !== state.events.length;
   const filename = generateCsvFilename(state.context, isFiltered);
   const csvData = generateTimetableCsv(eventsToExport, columns);
-  downloadCsvLocally(csvData, filename);
+  await downloadCsvLocally(csvData, filename);
   showBanner(
     `Exported ${eventsToExport.length} events to ${filename} successfully!`,
     "info"

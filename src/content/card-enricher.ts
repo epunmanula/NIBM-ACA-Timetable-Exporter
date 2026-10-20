@@ -22,12 +22,13 @@ import {
   getCalendarHeading,
   getElementCleanText,
   isCellOutsideMonth,
+  isLegendElement,
   parseHeadingMonthYear,
   resolveCellDate,
 } from './calendar-parser';
 import { scrapeActiveModal } from './dom-scraper';
 
-export { getCalendarHeading, parseHeadingMonthYear, isCellOutsideMonth };
+export { getCalendarHeading, parseHeadingMonthYear, isCellOutsideMonth, isLegendElement };
 
 export interface CardDescriptor {
   element: HTMLElement;
@@ -49,46 +50,6 @@ export type ProgressCallback = (data: ProgressCallbackData) => void;
 
 const TYPE_PREFIXES = 'LP|LO|TU|LB|SM|WS|EX|VV|PR|CW|PC';
 const BADGE_REGEX = new RegExp(`(?:^|\\b)(${TYPE_PREFIXES})(?:\\b|\\s*[-:]?\\s*)([A-Za-z0-9\\s/&.-]{1,25})`, 'i');
-
-/**
- * Detects if an element belongs to the bottom timetable legend bar (e.g. "SM Seminar", "LP Lecture (Physical)").
- */
-export function isLegendElement(el: Element): boolean {
-  if (el.closest('footer, [class*="legend" i], [data-testid*="legend" i]')) {
-    return true;
-  }
-
-  const text = (el.textContent || '').trim().toLowerCase();
-  const legendPhrases = [
-    'lecture (physical)',
-    'lecture (online)',
-    'course work',
-    'seminar',
-    'workshop',
-    'presentation',
-    'tutorial',
-    'practical',
-  ];
-
-  if (legendPhrases.some((p) => text === p || text === `sm ${p}` || text === `ws ${p}` || text === `lp ${p}`)) {
-    return true;
-  }
-
-  let curr: Element | null = el.parentElement;
-  for (let depth = 0; depth < 5 && curr; depth++) {
-    if (curr === document.body || curr.tagName === 'MAIN') break;
-    const cText = (curr.textContent || '').toLowerCase();
-    if (
-      (cText.includes('lecture (physical)') || cText.includes('lecture (online)')) &&
-      (cText.includes('tutorial') || cText.includes('exam') || cText.includes('viva'))
-    ) {
-      return true;
-    }
-    curr = curr.parentElement;
-  }
-
-  return false;
-}
 
 /**
  * Collects all distinct clickable timetable cards from the calendar DOM.
@@ -190,7 +151,33 @@ export function collectCalendarCards(
 
       if (!resolvedDate) return;
 
-      // 1. Structured cards (.event-card, [class*="event-card"], etc.)
+      // 1. Check direct event buttons inside cell (NIBM ACA standard calendar uses button with cursor-pointer or badges)
+      const eventButtons = Array.from(cell.querySelectorAll('button, [role="button"]')).filter((b) => {
+        if (isLegendElement(b)) return false;
+        const t = getElementCleanText(b);
+        return t.length >= 3 && BADGE_REGEX.test(t);
+      }) as HTMLElement[];
+
+      if (eventButtons.length > 0) {
+        for (const btn of eventButtons) {
+          const rawText = getElementCleanText(btn);
+          const match = rawText.match(BADGE_REGEX);
+          const typeHint = match ? match[1].toUpperCase() : undefined;
+          let courseHint = match ? match[2].trim() : undefined;
+          if (courseHint && courseHint.startsWith('-')) courseHint = courseHint.slice(1).trim();
+
+          cardDescriptors.push({
+            element: btn,
+            cellDate: resolvedDate,
+            previewText: rawText,
+            typeHint,
+            courseHint,
+          });
+        }
+        return;
+      }
+
+      // 2. Structured cards (.event-card, [class*="event-card"], etc.)
       const structuredCards = Array.from(
         cell.querySelectorAll('.event-card, [class*="event-card"], [class*="event-pill"], [class*="lecture-badge"]')
       ).filter((sc) => !isLegendElement(sc)) as HTMLElement[];
@@ -206,7 +193,7 @@ export function collectCalendarCards(
         return;
       }
 
-      // 2. Compact badges: LP MC, LP DL & CO, PC DL & CO, LP DM - 1, etc.
+      // 3. Compact badges: LP MC, LP DL & CO, PC DL & CO, LP DM - 1, etc.
       const candidates = Array.from(cell.querySelectorAll('*')).filter((el) => {
         if (el.children.length > 2) return false;
         if (isLegendElement(el)) return false;
@@ -608,12 +595,12 @@ export async function enrichAllCardsSequentially(
 
     if (modal) {
       // Scrape rich details from active modal using activeContext
-      const modalData = scrapeActiveModal(doc, activeContext);
+      const modalData = scrapeActiveModal(modal, activeContext);
 
-      // Prioritize card.cellDate which is the real cell date on the active calendar grid
-      const finalDate = (card.cellDate && /^\d{4}-\d{2}-\d{2}$/.test(card.cellDate))
-        ? card.cellDate
-        : (modalData?.date || card.cellDate);
+      // Prioritize modalData.date if valid date extracted from modal, otherwise card.cellDate
+      const finalDate = (modalData?.date && /^\d{4}-\d{2}-\d{2}$/.test(modalData.date))
+        ? modalData.date
+        : card.cellDate;
       const finalCourse = modalData?.courseCode || card.courseHint || card.previewText;
       const finalType = modalData?.type || card.typeHint || 'LP';
       const { typeLabel, mode } = resolveTypeInfo(finalType);

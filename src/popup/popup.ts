@@ -582,7 +582,7 @@ async function triggerEnrich() {
 /**
  * Handle CSV Export
  */
-function handleExport() {
+async function handleExport() {
   let eventsToExport = getFilteredEvents();
 
   if (eventsToExport.length === 0 && state.events.length > 0) {
@@ -605,7 +605,7 @@ function handleExport() {
   const filename = generateCsvFilename(state.context, isFiltered);
   const csvData = generateTimetableCsv(eventsToExport, columns);
 
-  downloadCsvLocally(csvData, filename);
+  await downloadCsvLocally(csvData, filename);
 
   showBanner(
     `Exported ${eventsToExport.length} events to ${filename} successfully!`,

@@ -271,9 +271,13 @@ async function autoEnrichFromModals(): Promise<ScraperState> {
   );
 
   if (enrichedEvents.length > 0) {
-    // Accumulate newly crawled rich events with all existing events
+    // Replace existing events for the active month & batch with freshly enriched events
+    const activeYearMonth = `${activeContext.year}-${String(activeContext.month + 1).padStart(2, '0')}`;
+    const otherEvents = currentState.events.filter(
+      (e) => !(e.date.startsWith(activeYearMonth) && (!activeContext.batch || !e.batch || e.batch === activeContext.batch))
+    );
     const combined = [
-      ...currentState.events,
+      ...otherEvents,
       ...enrichedEvents,
     ];
 
@@ -361,7 +365,11 @@ function setupMessageListener() {
             }
           })
             .then((scannedEvents) => {
-              const combined = [...currentState.events, ...scannedEvents];
+              // Replace existing events for the active batch with the freshly scanned events
+              const otherEvents = currentState.events.filter(
+                (e) => activeContext.batch && e.batch && e.batch !== activeContext.batch
+              );
+              const combined = [...otherEvents, ...scannedEvents];
               const { uniqueEvents, duplicatesRemoved } = deduplicateEvents(combined);
               const multiPeriod = computeMultiMonthPeriodLabel(
                 uniqueEvents,

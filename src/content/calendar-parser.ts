@@ -100,6 +100,69 @@ export function isCellOutsideMonth(el: Element): boolean {
 }
 
 /**
+ * Detects if an element belongs to the bottom timetable legend bar (e.g. "SM Seminar", "LP Lecture (Physical)").
+ */
+export function isLegendElement(el: Element): boolean {
+  if (el.closest('footer, [class*="legend" i], [data-testid*="legend" i]')) {
+    return true;
+  }
+
+  const text = (el.textContent || '').trim().toLowerCase();
+  const legendPhrases = [
+    'lecture (physical)',
+    'lecture(physical)',
+    'lecture (online)',
+    'lecture(online)',
+    'course work',
+    'coursework',
+    'seminar',
+    'workshop',
+    'presentation',
+    'tutorial',
+    'practical',
+    'exam',
+    'viva',
+    'lab',
+  ];
+
+  if (legendPhrases.some((p) => text === p || text === `sm ${p}` || text === `ws ${p}` || text === `lp ${p}` || text === `lb ${p}` || text === `tu ${p}` || text === `pc ${p}` || text === `ex ${p}` || text === `vv ${p}` || text === `pr ${p}` || text === `cw ${p}`)) {
+    return true;
+  }
+
+  let curr: Element | null = el instanceof HTMLElement ? el : el.parentElement;
+  for (let depth = 0; depth < 6 && curr; depth++) {
+    if (curr === curr.ownerDocument?.body || curr.tagName === 'MAIN') break;
+
+    // Ancestors containing calendar grids, tables, or day cells are NOT the legend bar
+    if (curr.querySelector('table, [role="grid"], .grid, div[class*="grid"], [role="gridcell"], td, [class*="day-cell"]')) {
+      curr = curr.parentElement;
+      continue;
+    }
+
+    const cText = (curr.textContent || '').toLowerCase();
+    let keywordCount = 0;
+    if (cText.includes('lecture (physical)') || cText.includes('lecture(physical)')) keywordCount++;
+    if (cText.includes('lecture (online)') || cText.includes('lecture(online)')) keywordCount++;
+    if (cText.includes('tutorial')) keywordCount++;
+    if (cText.includes('course work') || cText.includes('coursework')) keywordCount++;
+    if (cText.includes('seminar')) keywordCount++;
+    if (cText.includes('workshop')) keywordCount++;
+    if (cText.includes('presentation')) keywordCount++;
+    if (cText.includes('practical')) keywordCount++;
+    if (cText.includes('viva')) keywordCount++;
+    if (cText.includes('exam')) keywordCount++;
+    if (cText.includes('lab')) keywordCount++;
+
+    if (keywordCount >= 3) {
+      return true;
+    }
+    curr = curr.parentElement;
+  }
+
+  return false;
+}
+
+/**
  * Extracts context (view, year, month, batch, period) from URL and visible DOM.
  */
 export function extractPageContext(doc: Document = document, currentUrl: string = window.location.href): CalendarContext {

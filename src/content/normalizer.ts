@@ -171,23 +171,24 @@ export function mergeModalIntoEvents(
     return false;
   });
 
-  // 2. If no exact time match, find the first slot on that date that is MISSING time or lecturer
-  if (!target) {
+  // 2. If no exact time match and modal has a start time, find a slot on that date that has NO start time
+  if (!target && modal.startTime) {
     target = events.find((e) => {
       if (e.date !== modal.date) return false;
       const eCourse = (e.courseCode || e.courseName || '').toUpperCase().trim();
       if (modalCourse && eCourse && eCourse !== modalCourse) return false;
       if (modalType && e.type && e.type.toUpperCase() !== modalType) return false;
-      return !e.startTime || !e.lecturer || !e.room;
+      return !e.startTime;
     });
   }
 
-  // 3. Fallback: any slot on that date matching course code
-  if (!target && modalCourse) {
+  // 3. If modal does NOT specify a start time, match by course & date to fill missing lecturer/room
+  if (!target && !modal.startTime) {
     target = events.find((e) => {
       if (e.date !== modal.date) return false;
       const eCourse = (e.courseCode || e.courseName || '').toUpperCase().trim();
-      return eCourse === modalCourse && (!e.startTime || !e.lecturer || !e.room);
+      if (modalCourse && eCourse && eCourse !== modalCourse) return false;
+      return !e.lecturer || !e.room;
     });
   }
 
@@ -369,15 +370,21 @@ export function deduplicateEvents(events: TimetableEvent[]): {
 
       // If both have start times: duplicate only if times match
       if (item.startTime && ev.startTime) {
-        return item.startTime === ev.startTime && item.endTime === ev.endTime;
+        return item.startTime === ev.startTime;
       }
 
-      // If one has details and the other has empty details for the EXACT same slot
+      // If one has details and the other has empty details for the same slot
       if ((item.startTime || itemRoom || itemLec) && !ev.startTime && !evRoom && !evLec) {
         return true; // merge with existing
       }
       if (!item.startTime && !itemRoom && !itemLec && (ev.startTime || evRoom || evLec)) {
         return true; // merge with existing
+      }
+
+      // If BOTH have empty start times, and same batch, date, course, and type:
+      // They are identical redundant captures of the same day badge
+      if (!item.startTime && !ev.startTime && (item.batch || '') === (ev.batch || '')) {
+        return true;
       }
 
       return false;

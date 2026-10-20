@@ -1,8 +1,10 @@
+// @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
 import {
   escapeCsvCell,
   generateTimetableCsv,
   generateCsvFilename,
+  downloadCsvLocally,
 } from '../src/export/csv-exporter';
 import { TimetableEvent, ExportColumnOption, CalendarContext } from '../src/types/timetable';
 
@@ -151,5 +153,58 @@ describe('CSV Exporter - Filename Generation', () => {
     };
     const name = generateCsvFilename(dirtyContext, false);
     expect(name).toMatch(/^NIBM_Timetable_DSE_24_1_FT_Special_2026-09\.csv$/);
+  });
+});
+
+describe('CSV Exporter - Local File Download', () => {
+  it('calls chrome.downloads.download with correct filename and dataUrl when available', async () => {
+    let capturedOptions: any = null;
+    (globalThis as any).chrome = {
+      runtime: {},
+      downloads: {
+        download: (opts: any, cb: (id: number) => void) => {
+          capturedOptions = opts;
+          cb(12345);
+        },
+      },
+    };
+
+    await downloadCsvLocally('Col1,Col2\r\nVal1,Val2', 'Test_Timetable');
+
+    expect(capturedOptions).toBeDefined();
+    expect(capturedOptions.filename).toBe('Test_Timetable.csv');
+    expect(capturedOptions.url).toContain('data:text/csv;charset=utf-8,');
+    expect(capturedOptions.saveAs).toBe(false);
+
+    delete (globalThis as any).chrome;
+  });
+
+  it('falls back to Data URL anchor download and sets download attribute to .csv when chrome.downloads is unavailable', async () => {
+    delete (globalThis as any).chrome;
+
+    let clicked = false;
+    let anchorHref = '';
+    let anchorDownload = '';
+
+    const origCreateElement = document.createElement.bind(document);
+    document.createElement = (tag: string, options?: any) => {
+      const el = origCreateElement(tag, options);
+      if (tag === 'a') {
+        el.click = () => {
+          clicked = true;
+          anchorHref = (el as HTMLAnchorElement).href;
+          anchorDownload = (el as HTMLAnchorElement).download;
+        };
+      }
+      return el;
+    };
+
+    await downloadCsvLocally('Col1,Col2\r\nVal1,Val2', 'MyFile.csv');
+
+    expect(clicked).toBe(true);
+    expect(anchorDownload).toBe('MyFile.csv');
+    expect(anchorHref).toContain('data:text/csv;charset=utf-8,');
+
+    document.createElement = origCreateElement;
   });
 });

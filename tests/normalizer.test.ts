@@ -264,4 +264,76 @@ describe('Normalizer - Deduplication and Fingerprinting', () => {
     expect(events[0].room).toBe('Lecture Hall 18 - 1st Fl');
     expect(events[1].room).toBe('Lecture Hall 18 - 1st Fl');
   });
+
+  it('preserves same-day split sessions (morning 09:00-12:00 and afternoon 13:00-16:00 LB ICS) in deduplicateEvents', () => {
+    const morningSession: TimetableEvent = {
+      ...sampleEvent1,
+      date: '2026-10-13',
+      courseCode: 'ICS',
+      type: 'LB',
+      typeLabel: 'Lab',
+      startTime: '09:00',
+      endTime: '12:00',
+      lecturer: '',
+      room: '',
+    };
+
+    const afternoonSession: TimetableEvent = {
+      ...sampleEvent1,
+      date: '2026-10-13',
+      courseCode: 'ICS',
+      type: 'LB',
+      typeLabel: 'Lab',
+      startTime: '13:00',
+      endTime: '16:00',
+      lecturer: '',
+      room: '',
+    };
+
+    const emptyScrapeBadge: TimetableEvent = {
+      ...sampleEvent1,
+      date: '2026-10-13',
+      courseCode: 'ICS',
+      type: 'LB',
+      typeLabel: 'Lab',
+      startTime: '',
+      endTime: '',
+      lecturer: '',
+      room: '',
+    };
+
+    const { uniqueEvents, duplicatesRemoved } = deduplicateEvents([
+      morningSession,
+      afternoonSession,
+      emptyScrapeBadge,
+    ]);
+
+    // Morning and afternoon sessions are kept distinct; empty badge merges into one of them
+    expect(uniqueEvents).toHaveLength(2);
+    expect(uniqueEvents[0].startTime).toBe('09:00');
+    expect(uniqueEvents[0].endTime).toBe('12:00');
+    expect(uniqueEvents[1].startTime).toBe('13:00');
+    expect(uniqueEvents[1].endTime).toBe('16:00');
+    expect(duplicatesRemoved).toBe(1);
+  });
+
+  it('deduplicates identical redundant empty captures for the same day and batch', () => {
+    const redundantBadges: TimetableEvent[] = Array.from({ length: 46 }, (_, i) => ({
+      ...sampleEvent1,
+      id: `ev_test_${i}`,
+      date: '2026-10-13',
+      courseCode: 'ICS',
+      type: 'LB',
+      typeLabel: 'Lab',
+      batch: 'DSE263FT',
+      startTime: '',
+      endTime: '',
+      lecturer: '',
+      room: '',
+    }));
+
+    const { uniqueEvents, duplicatesRemoved } = deduplicateEvents(redundantBadges);
+    expect(uniqueEvents).toHaveLength(1);
+    expect(duplicatesRemoved).toBe(45);
+  });
 });

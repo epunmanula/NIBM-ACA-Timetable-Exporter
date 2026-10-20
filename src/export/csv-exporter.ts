@@ -102,24 +102,58 @@ export function generateCsvFilename(context: CalendarContext, isFiltered = false
 }
 
 /**
- * Initiates local download via Blob and URL.createObjectURL.
+ * Initiates local download of CSV file.
+ * Prioritizes chrome.downloads API (with exact filename) and falls back to Data URL anchor download.
+ * Ensures downloaded file is always named properly with .csv extension (avoids raw blob UUID filenames in Chromium).
  * Zero external calls or data leakage.
  */
-export function downloadCsvLocally(csvContent: string, filename: string): void {
-  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-  const blobUrl = URL.createObjectURL(blob);
+export async function downloadCsvLocally(csvContent: string, filename: string): Promise<void> {
+  const cleanFilename = filename.toLowerCase().endsWith('.csv') ? filename : `${filename}.csv`;
+  const dataUrl = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csvContent);
 
-  const link = document.createElement('a');
-  link.href = blobUrl;
-  link.setAttribute('download', filename);
-  link.style.display = 'none';
+  // 1. Chrome Extension Downloads API (explicitly names the file in user's download directory)
+  if (
+    typeof chrome !== 'undefined' &&
+    chrome.downloads &&
+    typeof chrome.downloads.download === 'function'
+  ) {
+    try {
+      await new Promise<number>((resolve, reject) => {
+        chrome.downloads.download(
+          {
+            url: dataUrl,
+            filename: cleanFilename,
+            saveAs: false,
+          },
+          (downloadId) => {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message));
+            } else {
+              resolve(downloadId);
+            }
+          }
+        );
+      });
+      return;
+    } catch (err) {
+      console.warn('[NIBM Exporter] chrome.downloads.download failed, falling back to anchor:', err);
+    }
+  }
 
-  document.body.appendChild(link);
-  link.click();
+  // 2. Fallback: DOM anchor download using Data URL
+  // (Data URLs do not contain a blob UUID in the URL path, so Chromium respects the download attribute)
+  if (typeof document !== 'undefined') {
+    const link = document.createElement('a');
+    link.href = dataUrl;
+    link.setAttribute('download', cleanFilename);
+    link.download = cleanFilename;
+    link.style.display = 'none';
 
-  // Clean up resource
-  setTimeout(() => {
-    document.body.removeChild(link);
-    URL.revokeObjectURL(blobUrl);
-  }, 500);
+    (document.body || document.documentElement).appendChild(link);
+    link.click();
+
+    setTimeout(() => {
+      link.remove();
+    }, 1000);
+  }
 }
